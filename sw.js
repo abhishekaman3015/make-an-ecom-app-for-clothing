@@ -2,7 +2,7 @@ const CACHE_NAME = "maithilcart-cache-v1";
 const ASSETS_TO_CACHE = [
   "/",
   "/index.html",
-  "/assets/maithilcart-logo.jpg",
+  "/assets/maithilcart-logo.png",
   "/assets/everyday-tee.svg",
   "/assets/loopback-hoodie.svg",
   "/assets/ridge-overshirt.svg",

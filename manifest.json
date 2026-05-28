@@ -3,16 +3,16 @@
   "name": "MaithilCart Fashion Marketplace",
   "icons": [
     {
-      "src": "/assets/maithilcart-logo.jpg",
-      "type": "image/jpeg",
+      "src": "/assets/maithilcart-logo.png",
+      "type": "image/png",
       "sizes": "192x192",
-      "purpose": "any maskable"
+      "purpose": "any"
     },
     {
-      "src": "/assets/maithilcart-logo.jpg",
-      "type": "image/jpeg",
+      "src": "/assets/maithilcart-logo.png",
+      "type": "image/png",
       "sizes": "512x512",
-      "purpose": "any maskable"
+      "purpose": "any"
     }
   ],
   "start_url": "/",
