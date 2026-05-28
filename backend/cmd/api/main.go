@@ -165,7 +165,7 @@ func (a *app) seed(ctx context.Context) error {
 	buyerPass, _ := bcrypt.GenerateFromPassword([]byte("shop1234"), bcrypt.DefaultCost)
 	sellerPass, _ := bcrypt.GenerateFromPassword([]byte("seller1234"), bcrypt.DefaultCost)
 
-	var adminID, buyerID, sellerUserID, sellerID, catID, productID, variantID string
+	var adminID, buyerID, sellerUserID, sellerID, catID, productID string
 	err := a.db.QueryRow(ctx, `INSERT INTO users(name,email,password_hash,role)
 		VALUES($1,$2,$3,'ADMIN')
 		ON CONFLICT(email) DO UPDATE SET name=excluded.name,password_hash=excluded.password_hash,role=excluded.role,updated_at=now()
@@ -194,31 +194,119 @@ func (a *app) seed(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	err = a.db.QueryRow(ctx, `INSERT INTO categories(name,slug)
-		VALUES('Men Topwear','men-topwear')
-		ON CONFLICT(slug) DO UPDATE SET name=excluded.name
-		RETURNING id`).Scan(&catID)
-	if err != nil {
-		return err
+	categoriesList := []string{
+		"Men Topwear",
+		"Women Topwear",
+		"Men Bottomwear",
+		"Women Bottomwear",
+		"Ethnic Wear",
+		"Footwear",
+		"Accessories",
+		"Sportswear",
+		"Kids Wear",
 	}
-	err = a.db.QueryRow(ctx, `INSERT INTO products(seller_id,category_id,title,slug,description,brand,gender,image_url,mrp_cents,sale_price_cents,active,approved)
-		VALUES($1,$2,'Relaxed Resort Shirt','relaxed-resort-shirt','Breathable viscose shirt with sharp resort styling.','Urban Loom','Men','/assets/ridge-overshirt.svg',249900,149900,true,true)
-		ON CONFLICT(slug) DO UPDATE SET seller_id=excluded.seller_id,category_id=excluded.category_id,title=excluded.title,description=excluded.description,brand=excluded.brand,gender=excluded.gender,image_url=excluded.image_url,mrp_cents=excluded.mrp_cents,sale_price_cents=excluded.sale_price_cents,active=true,approved=true,updated_at=now()
-		RETURNING id`, sellerID, catID).Scan(&productID)
-	if err != nil {
-		return err
+
+	brandsMap := map[string][]string{
+		"Men Topwear":      {"Roadster", "WROGN", "H&M", "Jack & Jones"},
+		"Women Topwear":    {"Zara", "Forever 21", "H&M", "Mango"},
+		"Men Bottomwear":    {"Levi's", "Pepe Jeans", "Wrangler", "Roadster"},
+		"Women Bottomwear":  {"Levi's", "Only", "Vero Moda", "Zara"},
+		"Ethnic Wear":      {"Biba", "Fabindia", "W", "Aurelia"},
+		"Footwear":         {"Nike", "Adidas", "Puma", "Bata"},
+		"Accessories":      {"Fastrack", "Casio", "Wildhorn", "Skybags"},
+		"Sportswear":       {"Nike", "Adidas", "Under Armour", "Decathlon"},
+		"Kids Wear":        {"Gini & Jony", "U.S. Polo Assn. Kids", "H&M Kids", "Mothercare"},
 	}
-	err = a.db.QueryRow(ctx, `INSERT INTO product_variants(product_id,sku,size,color,stock)
-		VALUES($1,'UL-RRS-M-BLU','M','Indigo',24)
-		ON CONFLICT(sku) DO UPDATE SET product_id=excluded.product_id,size=excluded.size,color=excluded.color,stock=excluded.stock
-		RETURNING id`, productID).Scan(&variantID)
-	if err != nil {
-		return err
+
+	stylesMap := map[string][]string{
+		"Men Topwear":      {"Slim Fit Printed Shirt", "Regular Polo Tee", "Oversized Cotton Hoodie", "Casual Denim Jacket", "Classic Linen Shirt"},
+		"Women Topwear":    {"Floral Summer Top", "Oversized Knit Sweater", "Chiffon Blouse", "Ribbed Crop Tee", "Boho Tunic"},
+		"Men Bottomwear":    {"Slim Fit Chinos", "Regular Fit Denim", "Cargo Utility Pants", "Linen Lounge Trousers", "Joggers Track Pants"},
+		"Women Bottomwear":  {"High Waist Jeans", "Wide Leg Trousers", "Pleated Midi Skirt", "Paperbag Waist Pants", "Lounge Joggers"},
+		"Ethnic Wear":      {"Anarkali Kurta Suit", "Cotton Pathani Kurta", "Embroidered Festive Saree", "Printed Nehru Jacket", "Silk Kurta Pajama Set"},
+		"Footwear":         {"Breathable Running Shoes", "Casual Canvas Sneakers", "Leather Formal Brogues", "Slide Sandals", "Sport Training Shoes"},
+		"Accessories":      {"Leather Bi-Fold Wallet", "Minimalist Analog Watch", "Polarized Sunglasses", "Durable Canvas Backpack", "Classic Leather Belt"},
+		"Sportswear":       {"Dry-Fit Training Tee", "Compression Shorts", "Athletic Windbreaker", "Active Sports Joggers", "Gym Workout Tank"},
+		"Kids Wear":        {"Cotton Playsuit", "Graphic Print Tee", "Denim Dungarees", "Patterned Party Dress", "Cozy Fleece Pyjamas"},
 	}
-	_, err = a.db.Exec(ctx, `INSERT INTO product_variants(product_id,sku,size,color,stock)
-		VALUES($1,'UL-RRS-L-BLU','L','Indigo',14)
-		ON CONFLICT(sku) DO UPDATE SET product_id=excluded.product_id,size=excluded.size,color=excluded.color,stock=excluded.stock`, productID)
-	return err
+
+	imagePresets := map[string]string{
+		"Men Topwear":      "/assets/ridge-overshirt.svg",
+		"Women Topwear":    "/assets/everyday-tee.svg",
+		"Men Bottomwear":    "/assets/utility-pant.svg",
+		"Women Bottomwear":  "/assets/utility-pant.svg",
+		"Ethnic Wear":      "/assets/ridge-overshirt.svg",
+		"Footwear":         "/assets/loopback-hoodie.svg",
+		"Accessories":      "/assets/everyday-tee.svg",
+		"Sportswear":       "/assets/loopback-hoodie.svg",
+		"Kids Wear":        "/assets/everyday-tee.svg",
+	}
+
+	for _, catName := range categoriesList {
+		catSlug := strings.ReplaceAll(strings.ToLower(catName), " ", "-")
+		err = a.db.QueryRow(ctx, `INSERT INTO categories(name,slug) VALUES($1,$2)
+			ON CONFLICT(slug) DO UPDATE SET name=excluded.name RETURNING id`, catName, catSlug).Scan(&catID)
+		if err != nil {
+			return err
+		}
+
+		brands := brandsMap[catName]
+		styles := stylesMap[catName]
+		img := imagePresets[catName]
+		gender := "Unisex"
+		if strings.HasPrefix(catName, "Men") {
+			gender = "Men"
+		} else if strings.HasPrefix(catName, "Women") {
+			gender = "Women"
+		} else if catName == "Kids Wear" {
+			gender = "Kids"
+		}
+
+		for i := 1; i <= 20; i++ {
+			brand := brands[i % len(brands)]
+			styleName := styles[i % len(styles)]
+			title := fmt.Sprintf("%s %s - Style %02d", brand, styleName, i)
+			slug := strings.ReplaceAll(strings.ToLower(brand+"-"+styleName+"-"+strconv.Itoa(i)), " ", "-")
+			desc := fmt.Sprintf("High quality %s from %s. Designed for comfort, durability, and a premium look.", styleName, brand)
+			mrp := (999 + (i*149)%2000) * 100
+			price := mrp * 60 / 100 // 40% discount
+
+			err = a.db.QueryRow(ctx, `INSERT INTO products(seller_id,category_id,title,slug,description,brand,gender,image_url,mrp_cents,sale_price_cents,active,approved)
+				VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,true,true)
+				ON CONFLICT(slug) DO UPDATE SET seller_id=excluded.seller_id,category_id=excluded.category_id,title=excluded.title,description=excluded.description,brand=excluded.brand,gender=excluded.gender,image_url=excluded.image_url,mrp_cents=excluded.mrp_cents,sale_price_cents=excluded.sale_price_cents,active=true,approved=true,updated_at=now()
+				RETURNING id`, sellerID, catID, title, slug, desc, brand, gender, img, mrp, price).Scan(&productID)
+			if err != nil {
+				return err
+			}
+
+			sizes := []string{"S", "M", "L", "XL"}
+			colors := []string{"Blue", "Black", "Grey", "Beige"}
+			color := colors[i % len(colors)]
+			for _, size := range sizes {
+				// Prevent empty/short brands or styleNames causing dynamic substring panic
+				safeBrand := brand
+				if len(safeBrand) < 3 {
+					safeBrand = "GEN"
+				}
+				safeStyle := styleName
+				if len(safeStyle) < 3 {
+					safeStyle = "STY"
+				}
+				sku := fmt.Sprintf("%s-%s-%s-%s-%d", strings.ToUpper(safeBrand[:3]), strings.ToUpper(safeStyle[:3]), size, strings.ToUpper(color[:3]), i)
+				sku = strings.ReplaceAll(sku, " ", "")
+				stock := 10 + (i*7)%40
+
+				_, err = a.db.Exec(ctx, `INSERT INTO product_variants(product_id,sku,size,color,stock)
+					VALUES($1,$2,$3,$4,$5)
+					ON CONFLICT(sku) DO UPDATE SET product_id=excluded.product_id,size=excluded.size,color=excluded.color,stock=excluded.stock`,
+					productID, sku, size, color, stock)
+				if err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
 }
 
 func (a *app) health(w http.ResponseWriter, r *http.Request) {
