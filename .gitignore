@@ -1,0 +1,30 @@
+# Node dependencies & builds
+node_modules/
+dist/
+.env
+.env.local
+.env.*.local
+*.tsbuildinfo
+
+# Go compiled binaries
+backend/maithilcart-api
+maithilcart-api
+bin/
+
+# IDE / Editors
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Task logs & configs
+*.log
+.gemini/
+.system_generated/

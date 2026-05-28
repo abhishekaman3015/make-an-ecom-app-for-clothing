@@ -1,0 +1,23 @@
+{
+  "name": "maithilcart-marketplace",
+  "version": "1.0.0",
+  "private": true,
+  "description": "MaithilCart fashion marketplace with React frontend, Go backend, and Postgres database.",
+  "scripts": {
+    "install:all": "npm install --prefix client",
+    "dev": "node scripts/dev.mjs",
+    "dev:api": "cd backend && go run ./cmd/api",
+    "dev:client": "npm run dev --prefix client",
+    "build": "npm run build --prefix client && cd backend && go build -o maithilcart-api ./cmd/api",
+    "docker:up": "docker compose up --build"
+  },
+  "keywords": [
+    "ecommerce",
+    "clothing",
+    "react",
+    "express",
+    "prisma"
+  ],
+  "author": "",
+  "license": "MIT"
+}
