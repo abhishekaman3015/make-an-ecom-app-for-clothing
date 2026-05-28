@@ -1,0 +1,23 @@
+{
+  "short_name": "MaithilCart",
+  "name": "MaithilCart Fashion Marketplace",
+  "icons": [
+    {
+      "src": "/assets/maithilcart-logo.jpg",
+      "type": "image/jpeg",
+      "sizes": "192x192",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/assets/maithilcart-logo.jpg",
+      "type": "image/jpeg",
+      "sizes": "512x512",
+      "purpose": "any maskable"
+    }
+  ],
+  "start_url": "/",
+  "background_color": "#ffffff",
+  "theme_color": "#ff3f6c",
+  "display": "standalone",
+  "orientation": "portrait-primary"
+}
