@@ -210,7 +210,7 @@ func (a *app) seed(ctx context.Context) error {
 	err = a.db.QueryRow(ctx, `INSERT INTO users(name,email,password_hash,role)
 		VALUES($1,$2,$3,'ADMIN')
 		ON CONFLICT(email) DO UPDATE SET name=excluded.name,password_hash=excluded.password_hash,role=excluded.role,updated_at=now()
-		RETURNING id`, "Abhishek Admin", "admin", string(userAdminPass)).Scan(&userAdminID)
+		RETURNING id`, "Abhishek Admin", "admin@maithilcart.com", string(userAdminPass)).Scan(&userAdminID)
 	if err != nil {
 		return err
 	}
