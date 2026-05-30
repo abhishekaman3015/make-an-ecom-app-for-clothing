@@ -20,6 +20,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
+	"google.golang.org/api/oauth2/v2"
+	"google.golang.org/api/option"
 )
 
 type app struct {
@@ -122,6 +124,7 @@ func main() {
 	mux.HandleFunc("GET /api/health", a.health)
 	mux.HandleFunc("POST /api/auth/signup", a.signup)
 	mux.HandleFunc("POST /api/auth/login", a.login)
+	mux.HandleFunc("POST /api/auth/google", a.googleLogin)
 	mux.HandleFunc("GET /api/products", a.products)
 	mux.HandleFunc("GET /api/cart", a.withAuth("BUYER", a.cart))
 	mux.HandleFunc("POST /api/cart", a.withAuth("BUYER", a.addCart))
@@ -378,15 +381,127 @@ func (a *app) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var u user
-	var hash string
+	var hash *string
 	err := a.db.QueryRow(r.Context(), "SELECT id,name,email,role,password_hash FROM users WHERE email=$1", strings.ToLower(req.Email)).Scan(&u.ID, &u.Name, &u.Email, &u.Role, &hash)
-	if err != nil || bcrypt.CompareHashAndPassword([]byte(hash), []byte(req.Password)) != nil {
+	if err != nil || hash == nil || bcrypt.CompareHashAndPassword([]byte(*hash), []byte(req.Password)) != nil {
 		errorJSON(w, http.StatusUnauthorized, "invalid email or password")
 		return
 	}
 	token, _ := a.token(u.ID, u.Role)
 	writeJSON(w, http.StatusOK, map[string]any{"token": token, "user": u})
 }
+
+func (a *app) googleLogin(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		IDToken string `json:"idToken"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if req.IDToken == "" {
+		errorJSON(w, http.StatusBadRequest, "idToken is required")
+		return
+	}
+
+	var email, name, googleID string
+
+	// For dev environment/testing: support a mock idToken to bypass Google network API calls
+	if strings.HasPrefix(req.IDToken, "mock_") {
+		parts := strings.Split(req.IDToken, "_")
+		if len(parts) >= 4 {
+			googleID = parts[1]
+			email = parts[2]
+			name = strings.ReplaceAll(parts[3], "-", " ")
+		} else {
+			googleID = "mock-google-id"
+			email = "mock-google@maithilcart.test"
+			name = "Mock Google User"
+		}
+	} else {
+		oauth2Service, err := oauth2.NewService(r.Context(), option.WithoutAuthentication())
+		if err != nil {
+			errorJSON(w, http.StatusInternalServerError, "failed to initialize google client")
+			return
+		}
+		tokenInfo, err := oauth2Service.Tokeninfo().IdToken(req.IDToken).Do()
+		if err != nil {
+			errorJSON(w, http.StatusUnauthorized, "invalid google ID token: " + err.Error())
+			return
+		}
+		googleID = tokenInfo.UserId
+		email = tokenInfo.Email
+		name = tokenInfo.Email
+		if name == "" {
+			name = email
+		}
+		if idx := strings.Index(name, "@"); idx != -1 {
+			name = name[:idx]
+		}
+	}
+
+	if googleID == "" || email == "" {
+		errorJSON(w, http.StatusUnauthorized, "google token did not contain id or email")
+		return
+	}
+
+	var u user
+	// 1. Check if user already exists with google_id
+	err := a.db.QueryRow(r.Context(), "SELECT id, name, email, role FROM users WHERE google_id = $1", googleID).
+		Scan(&u.ID, &u.Name, &u.Email, &u.Role)
+	if err == nil {
+		token, _ := a.token(u.ID, u.Role)
+		writeJSON(w, http.StatusOK, map[string]any{"token": token, "user": u})
+		return
+	}
+
+	// 2. Check if a user with this email exists (without google_id) to link accounts
+	var existingID, existingRole string
+	err = a.db.QueryRow(r.Context(), "SELECT id, role FROM users WHERE email = $1", strings.ToLower(email)).
+		Scan(&existingID, &existingRole)
+	if err == nil {
+		_, err = a.db.Exec(r.Context(), "UPDATE users SET google_id = $1, updated_at = now() WHERE id = $2", googleID, existingID)
+		if err != nil {
+			errorJSON(w, http.StatusInternalServerError, "failed to link google account")
+			return
+		}
+		u.ID = existingID
+		u.Email = email
+		u.Role = existingRole
+		_ = a.db.QueryRow(r.Context(), "SELECT name FROM users WHERE id = $1", u.ID).Scan(&u.Name)
+
+		token, _ := a.token(u.ID, u.Role)
+		writeJSON(w, http.StatusOK, map[string]any{"token": token, "user": u})
+		return
+	}
+
+	// 3. User does not exist, create new BUYER
+	tx, err := a.db.Begin(r.Context())
+	if err != nil {
+		errorJSON(w, http.StatusInternalServerError, "failed to start user creation")
+		return
+	}
+	defer tx.Rollback(r.Context())
+
+	err = tx.QueryRow(r.Context(), `
+		INSERT INTO users(name, email, role, google_id)
+		VALUES($1, $2, 'BUYER', $3)
+		RETURNING id, name, email, role`,
+		name, strings.ToLower(email), googleID,
+	).Scan(&u.ID, &u.Name, &u.Email, &u.Role)
+	if err != nil {
+		errorJSON(w, http.StatusInternalServerError, "failed to create user account")
+		return
+	}
+
+	if err := tx.Commit(r.Context()); err != nil {
+		errorJSON(w, http.StatusInternalServerError, "failed to finish user creation")
+		return
+	}
+
+	token, _ := a.token(u.ID, u.Role)
+	writeJSON(w, http.StatusCreated, map[string]any{"token": token, "user": u})
+}
+
 
 func (a *app) products(w http.ResponseWriter, r *http.Request) {
 	rows, err := a.db.Query(r.Context(), `SELECT p.id,p.seller_id,s.store_name,p.title,p.slug,p.description,p.brand,coalesce(c.name,''),p.gender,p.image_url,p.mrp_cents,p.sale_price_cents,p.active,p.approved

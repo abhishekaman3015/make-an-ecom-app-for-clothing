@@ -58,6 +58,8 @@ export const api = {
     request<AuthPayload>("/api/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }),
   signup: (payload: SignupPayload) =>
     request<AuthPayload>("/api/auth/signup", { method: "POST", body: JSON.stringify(payload) }),
+  googleLogin: (idToken: string) =>
+    request<AuthPayload>("/api/auth/google", { method: "POST", body: JSON.stringify({ idToken }) }),
   products: () => requestArray<Product>("/api/products"),
   cart: (token: string) => requestArray<CartItem>("/api/cart", {}, token),
   addCart: (token: string, variantId: string, quantity = 1) =>

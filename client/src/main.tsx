@@ -3,9 +3,15 @@ import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import "./styles.css";
 
+import { GoogleOAuthProvider } from "@react-oauth/google";
+
+const googleClientId = import.meta.env.VITE_GOOGLE_CLIENT_ID || "1084223281084-dummyclientidforlocaltesting.apps.googleusercontent.com";
+
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <App />
+    <GoogleOAuthProvider clientId={googleClientId}>
+      <App />
+    </GoogleOAuthProvider>
   </StrictMode>
 );
 

@@ -1,6 +1,7 @@
 import React, { FormEvent, useState } from "react";
 import { X } from "lucide-react";
 import { api, AuthPayload } from "../api";
+import { GoogleLogin } from "@react-oauth/google";
 
 interface AuthModalProps {
   onClose: () => void;
@@ -68,9 +69,7 @@ export function AuthModal({ onClose, onAuth, initialMode = "login" }: AuthModalP
     setLoading(true);
     setErrorMsg("");
     try {
-      const payload = await api.login("buyer@maithilcart.test", "shop1234");
-      // Set name to Google User for visual feedback
-      payload.user.name = "Google User";
+      const payload = await api.googleLogin("mock_googleid123_buyer-google@maithilcart.test_Google-User");
       onAuth(payload);
       onClose();
     } catch (err: any) {
@@ -224,10 +223,32 @@ export function AuthModal({ onClose, onAuth, initialMode = "login" }: AuthModalP
             </button>
           </form>
 
-          <button type="button" className="btn-google-auth" onClick={handleGoogleLogin} disabled={loading}>
-            <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google" />
-            <span>Continue with Google</span>
-          </button>
+          <div style={{ display: "flex", justifyContent: "center", marginTop: "12px", marginBottom: "12px" }}>
+            <GoogleLogin
+              onSuccess={async (credentialResponse) => {
+                if (credentialResponse.credential) {
+                  setLoading(true);
+                  setErrorMsg("");
+                  try {
+                    const payload = await api.googleLogin(credentialResponse.credential);
+                    onAuth(payload);
+                    onClose();
+                  } catch (err: any) {
+                    setErrorMsg(err.message || "Failed to authenticate with Google.");
+                  } finally {
+                    setLoading(false);
+                  }
+                }
+              }}
+              onError={() => {
+                setErrorMsg("Google Sign-In failed.");
+              }}
+              theme="outline"
+              shape="rectangular"
+              text="signin_with"
+              width="280"
+            />
+          </div>
 
           <button
             type="button"
@@ -242,7 +263,7 @@ export function AuthModal({ onClose, onAuth, initialMode = "login" }: AuthModalP
             <p className="quick-logins-title" style={{ textAlign: "center", marginBottom: "8px" }}>
               Quick Demo Logins
             </p>
-            <div className="quick-login-grid">
+            <div className="quick-login-grid" style={{ gridTemplateColumns: "repeat(4, 1fr)" }}>
               <button onClick={() => handleQuickLogin("buyer")} disabled={loading}>
                 Buyer
               </button>
@@ -251,6 +272,9 @@ export function AuthModal({ onClose, onAuth, initialMode = "login" }: AuthModalP
               </button>
               <button onClick={() => handleQuickLogin("admin")} disabled={loading}>
                 Admin
+              </button>
+              <button onClick={handleGoogleLogin} disabled={loading} style={{ background: "#4285f4", color: "white", fontSize: "10px", padding: "6px 2px" }}>
+                Google (Mock)
               </button>
             </div>
           </div>

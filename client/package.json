@@ -9,6 +9,7 @@
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {
+    "@react-oauth/google": "^0.13.5",
     "@vitejs/plugin-react": "^4.3.4",
     "lucide-react": "^0.468.0",
     "maithilcart-marketplace": "file:..",
