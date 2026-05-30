@@ -138,12 +138,16 @@ export function Header({
                     <button className="logout-btn" onClick={() => { onTriggerAuth(); setDropdownOpen(false); }}>
                       Login / Signup
                     </button>
-                    <p className="quick-logins-title">Quick Demo Login</p>
-                    <div className="quick-login-grid">
-                      <button onClick={() => { onQuickLogin("buyer"); setDropdownOpen(false); }}>Buyer</button>
-                      <button onClick={() => { onQuickLogin("seller"); setDropdownOpen(false); }}>Seller</button>
-                      <button onClick={() => { onQuickLogin("admin"); setDropdownOpen(false); }}>Admin</button>
-                    </div>
+                    {import.meta.env.DEV && (
+                      <>
+                        <p className="quick-logins-title">Quick Demo Login</p>
+                        <div className="quick-login-grid">
+                          <button onClick={() => { onQuickLogin("buyer"); setDropdownOpen(false); }}>Buyer</button>
+                          <button onClick={() => { onQuickLogin("seller"); setDropdownOpen(false); }}>Seller</button>
+                          <button onClick={() => { onQuickLogin("admin"); setDropdownOpen(false); }}>Admin</button>
+                        </div>
+                      </>
+                    )}
                   </>
                 )}
               </div>

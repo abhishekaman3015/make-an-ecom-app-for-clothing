@@ -259,25 +259,27 @@ export function AuthModal({ onClose, onAuth, initialMode = "login" }: AuthModalP
           </button>
 
           {/* Quick logins for testing */}
-          <div style={{ marginTop: "24px", paddingTop: "16px", borderTop: "1px solid var(--border-color)" }}>
-            <p className="quick-logins-title" style={{ textAlign: "center", marginBottom: "8px" }}>
-              Quick Demo Logins
-            </p>
-            <div className="quick-login-grid" style={{ gridTemplateColumns: "repeat(4, 1fr)" }}>
-              <button onClick={() => handleQuickLogin("buyer")} disabled={loading}>
-                Buyer
-              </button>
-              <button onClick={() => handleQuickLogin("seller")} disabled={loading}>
-                Seller
-              </button>
-              <button onClick={() => handleQuickLogin("admin")} disabled={loading}>
-                Admin
-              </button>
-              <button onClick={handleGoogleLogin} disabled={loading} style={{ background: "#4285f4", color: "white", fontSize: "10px", padding: "6px 2px" }}>
-                Google (Mock)
-              </button>
+          {import.meta.env.DEV && (
+            <div style={{ marginTop: "24px", paddingTop: "16px", borderTop: "1px solid var(--border-color)" }}>
+              <p className="quick-logins-title" style={{ textAlign: "center", marginBottom: "8px" }}>
+                Quick Demo Logins
+              </p>
+              <div className="quick-login-grid" style={{ gridTemplateColumns: "repeat(4, 1fr)" }}>
+                <button onClick={() => handleQuickLogin("buyer")} disabled={loading}>
+                  Buyer
+                </button>
+                <button onClick={() => handleQuickLogin("seller")} disabled={loading}>
+                  Seller
+                </button>
+                <button onClick={() => handleQuickLogin("admin")} disabled={loading}>
+                  Admin
+                </button>
+                <button onClick={handleGoogleLogin} disabled={loading} style={{ background: "#4285f4", color: "white", fontSize: "10px", padding: "6px 2px" }}>
+                  Google (Mock)
+                </button>
+              </div>
             </div>
-          </div>
+          )}
         </div>
       </div>
     </div>
