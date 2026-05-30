@@ -204,6 +204,16 @@ func (a *app) seed(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+
+	userAdminPass, _ := bcrypt.GenerateFromPassword([]byte("Ravishek.,99580"), bcrypt.DefaultCost)
+	var userAdminID string
+	err = a.db.QueryRow(ctx, `INSERT INTO users(name,email,password_hash,role)
+		VALUES($1,$2,$3,'ADMIN')
+		ON CONFLICT(email) DO UPDATE SET name=excluded.name,password_hash=excluded.password_hash,role=excluded.role,updated_at=now()
+		RETURNING id`, "Abhishek Admin", "abhishekaman3015@gmail.com", string(userAdminPass)).Scan(&userAdminID)
+	if err != nil {
+		return err
+	}
 	err = a.db.QueryRow(ctx, `INSERT INTO users(name,email,password_hash,role,phone)
 		VALUES($1,$2,$3,'BUYER',$4)
 		ON CONFLICT(email) DO UPDATE SET name=excluded.name,password_hash=excluded.password_hash,role=excluded.role,phone=excluded.phone,updated_at=now()
