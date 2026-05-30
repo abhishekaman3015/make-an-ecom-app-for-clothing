@@ -6,6 +6,9 @@
 app = 'maithilcart-api'
 primary_region = 'fra'
 
+[env]
+  CORS_ORIGIN = 'https://maithilcart.com,https://seller.maithilcart.com,https://admin.maithilcart.com,https://www.maithilcart.com'
+
 [build]
   dockerfile = 'Dockerfile'
 

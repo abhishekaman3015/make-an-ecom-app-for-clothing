@@ -6,6 +6,8 @@ export type User = {
   name: string;
   email: string;
   role: Role;
+  avatarUrl?: string;
+  phone?: string;
 };
 
 export type Variant = {
@@ -73,10 +75,14 @@ export type Seller = {
   legalName?: string;
   gstin?: string;
   payoutAccount?: string;
-  status: "PENDING" | "APPROVED" | "SUSPENDED";
+  status: "PENDING" | "APPROVED" | "SUSPENDED" | "REJECTED" | "HOLD";
   canListProducts: boolean;
   canReceivePayouts: boolean;
   commissionBps?: number;
+  logoUrl?: string;
+  bannerUrl?: string;
+  documentUrl?: string;
+  adminComment?: string;
 };
 
 export type Payout = {
@@ -85,4 +91,21 @@ export type Payout = {
   amountCents: number;
   status: string;
   createdAt: string;
+};
+
+export type Address = {
+  id: string;
+  userId: string;
+  addressName: string;
+  recipientName: string;
+  phone: string;
+  addressLine1: string;
+  addressLine2?: string;
+  city: string;
+  state: string;
+  postalCode: string;
+  country: string;
+  latitude?: number;
+  longitude?: number;
+  isDefault: boolean;
 };

@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from "react";
 import { Search, ShoppingBag, User as UserIcon, LogOut, ShieldCheck, Store, Truck, Home } from "lucide-react";
 import type { User, CartItem } from "../types";
 
-type View = "shop" | "orders" | "seller" | "admin" | "bag";
+type View = "shop" | "orders" | "seller" | "admin" | "bag" | "profile";
 
 interface HeaderProps {
   session: { token: string; user: User } | null;
@@ -31,6 +31,12 @@ export function Header({
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   const role = session?.user.role;
+  const subdomain = React.useMemo(() => {
+    const host = window.location.hostname;
+    if (host.startsWith("admin.")) return "ADMIN";
+    if (host.startsWith("seller.")) return "SELLER";
+    return "BUYER";
+  }, []);
   const isBuyer = role === "BUYER" || !session; // allow guest/buyer
   const isSeller = role === "SELLER";
   const isAdmin = role === "ADMIN";
@@ -62,20 +68,22 @@ export function Header({
 
         {/* Web Navigation Links */}
         <nav className="nav-links">
-          <button className={view === "shop" ? "active" : ""} onClick={() => setView("shop")}>
-            Shop
-          </button>
-          {session && (role === "BUYER") && (
+          {subdomain === "BUYER" && (
+            <button className={view === "shop" ? "active" : ""} onClick={() => setView("shop")}>
+              Shop
+            </button>
+          )}
+          {session && (role === "BUYER") && subdomain === "BUYER" && (
             <button className={view === "orders" ? "active" : ""} onClick={() => setView("orders")}>
               Orders
             </button>
           )}
-          {isSeller && (
+          {isSeller && subdomain === "SELLER" && (
             <button className={view === "seller" ? "active" : ""} onClick={() => setView("seller")}>
               Seller Studio
             </button>
           )}
-          {isAdmin && (
+          {isAdmin && subdomain === "ADMIN" && (
             <button className={view === "admin" ? "active" : ""} onClick={() => setView("admin")}>
               Admin Console
             </button>
@@ -83,20 +91,22 @@ export function Header({
         </nav>
 
         {/* Search Bar */}
-        <div className="search-container">
-          <div className="search-bar">
-            <Search size={18} />
-            <input
-              type="text"
-              placeholder="Search for brands, products, ethnic wear..."
-              value={query}
-              onChange={(e) => {
-                setQuery(e.target.value);
-                if (view !== "shop") setView("shop");
-              }}
-            />
+        {subdomain === "BUYER" && (
+          <div className="search-container">
+            <div className="search-bar">
+              <Search size={18} />
+              <input
+                type="text"
+                placeholder="Search for brands, products, ethnic wear..."
+                value={query}
+                onChange={(e) => {
+                  setQuery(e.target.value);
+                  if (view !== "shop") setView("shop");
+                }}
+              />
+            </div>
           </div>
-        </div>
+        )}
 
         {/* User Actions */}
         <div className="user-actions">
@@ -115,6 +125,11 @@ export function Header({
                       <p className="name">{session.user.name}</p>
                       <p className="role">{session.user.role}</p>
                     </div>
+                    {role === "BUYER" && (
+                      <button className="action-btn logout-btn" style={{ background: '#f5f5f6', color: '#282c3f', marginBottom: '8px' }} onClick={() => { setView("profile"); setDropdownOpen(false); }}>
+                        My Profile
+                      </button>
+                    )}
                     {isSeller && (
                       <button className="action-btn logout-btn" style={{ background: '#f5f5f6', color: '#282c3f', marginBottom: '8px' }} onClick={() => { setView("seller"); setDropdownOpen(false); }}>
                         Seller Studio
@@ -142,9 +157,9 @@ export function Header({
                       <>
                         <p className="quick-logins-title">Quick Demo Login</p>
                         <div className="quick-login-grid">
-                          <button onClick={() => { onQuickLogin("buyer"); setDropdownOpen(false); }}>Buyer</button>
-                          <button onClick={() => { onQuickLogin("seller"); setDropdownOpen(false); }}>Seller</button>
-                          <button onClick={() => { onQuickLogin("admin"); setDropdownOpen(false); }}>Admin</button>
+                          {subdomain === "BUYER" && <button onClick={() => { onQuickLogin("buyer"); setDropdownOpen(false); }}>Buyer</button>}
+                          {subdomain === "SELLER" && <button onClick={() => { onQuickLogin("seller"); setDropdownOpen(false); }}>Seller</button>}
+                          {subdomain === "ADMIN" && <button onClick={() => { onQuickLogin("admin"); setDropdownOpen(false); }}>Admin</button>}
                         </div>
                       </>
                     )}

@@ -1,5 +1,5 @@
 import React, { FormEvent, useState } from "react";
-import { BadgeCheck, Boxes, CreditCard, PackagePlus, Store, FileText, ShoppingCart } from "lucide-react";
+import { BadgeCheck, Boxes, CreditCard, PackagePlus, Store, FileText, ShoppingCart, Upload, Image, FileUp, ExternalLink, AlertCircle } from "lucide-react";
 import { api } from "../api";
 import type { Product, Payout, Order, Seller } from "../types";
 
@@ -45,6 +45,71 @@ export function SellerConsole({
 }: SellerConsoleProps) {
   const [formImage, setFormImage] = useState("/assets/everyday-tee.svg");
   const [submitting, setSubmitting] = useState(false);
+
+  // Shop details form state
+  const [storeName, setStoreName] = useState("");
+  const [legalName, setLegalName] = useState("");
+  const [gstin, setGstin] = useState("");
+  const [logoUrl, setLogoUrl] = useState("");
+  const [bannerUrl, setBannerUrl] = useState("");
+  const [documentUrl, setDocumentUrl] = useState("");
+  const [savingShop, setSavingShop] = useState(false);
+  const [shopError, setShopError] = useState("");
+  const [shopSuccess, setShopSuccess] = useState("");
+
+  React.useEffect(() => {
+    if (seller) {
+      setStoreName(seller.storeName || "");
+      setLegalName(seller.legalName || "");
+      setGstin(seller.gstin || "");
+      setLogoUrl(seller.logoUrl || "");
+      setBannerUrl(seller.bannerUrl || "");
+      setDocumentUrl(seller.documentUrl || "");
+    }
+  }, [seller]);
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>, type: "logo" | "banner" | "document") => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    try {
+      setSavingShop(true);
+      setShopError("");
+      setShopSuccess("");
+      const result = await api.upload(file);
+      if (type === "logo") setLogoUrl(result.url);
+      else if (type === "banner") setBannerUrl(result.url);
+      else if (type === "document") setDocumentUrl(result.url);
+      setShopSuccess("File uploaded successfully! Click 'Save Shop Settings' below to persist changes.");
+    } catch (err: any) {
+      setShopError(err.message || "Failed to upload file.");
+    } finally {
+      setSavingShop(false);
+    }
+  };
+
+  const handleSaveShopSettings = async (e: FormEvent) => {
+    e.preventDefault();
+    setSavingShop(true);
+    setShopError("");
+    setShopSuccess("");
+    try {
+      await api.updateSellerMe(token, {
+        storeName,
+        legalName,
+        gstin,
+        logoUrl: logoUrl || undefined,
+        bannerUrl: bannerUrl || undefined,
+        documentUrl: documentUrl || undefined,
+      });
+      setShopSuccess("Shop profile updated successfully!");
+      await refresh();
+    } catch (err: any) {
+      setShopError(err.message || "Failed to update shop profile.");
+    } finally {
+      setSavingShop(false);
+    }
+  };
 
   const earningsCents = payouts.reduce((sum, item) => sum + item.amountCents, 0);
 
@@ -92,6 +157,70 @@ export function SellerConsole({
         </div>
       </div>
 
+      {/* Alert Banner based on Seller Status */}
+      {seller && (
+        <div style={{ marginBottom: "20px" }}>
+          {seller.status === "PENDING" && (
+            <div className="warning" style={{ background: "#fffbeb", borderColor: "#fef3c7", color: "#b45309", padding: "16px", borderRadius: "8px", border: "1px solid" }}>
+              <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+                <span style={{ fontSize: "20px" }}>⏳</span>
+                <div>
+                  <strong style={{ display: "block" }}>Registration Under Review</strong>
+                  <span style={{ fontSize: "13px" }}>We are verifying your documents. You can add products to your catalog in the meantime; they will automatically go live once approved!</span>
+                </div>
+              </div>
+            </div>
+          )}
+          {seller.status === "HOLD" && (
+            <div className="warning" style={{ background: "#fff7ed", borderColor: "#ffedd5", color: "#c2410c", padding: "16px", borderRadius: "8px", border: "1px solid" }}>
+              <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+                <span style={{ fontSize: "20px" }}>⚠️</span>
+                <div>
+                  <strong style={{ display: "block" }}>Registration Placed on Hold</strong>
+                  <span style={{ fontSize: "13px" }}>Reason: <strong style={{ textDecoration: "underline" }}>{seller.adminComment || "Please contact admin."}</strong></span>
+                  <span style={{ display: "block", fontSize: "12px", marginTop: "4px" }}>Please upload a valid verification document below to submit for re-evaluation.</span>
+                </div>
+              </div>
+            </div>
+          )}
+          {seller.status === "REJECTED" && (
+            <div className="warning" style={{ background: "#fef2f2", borderColor: "#fee2e2", color: "#b91c1c", padding: "16px", borderRadius: "8px", border: "1px solid" }}>
+              <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+                <span style={{ fontSize: "20px" }}>❌</span>
+                <div>
+                  <strong style={{ display: "block" }}>Registration Rejected</strong>
+                  <span style={{ fontSize: "13px" }}>Reason: <strong>{seller.adminComment || "Please contact admin."}</strong></span>
+                  <span style={{ display: "block", fontSize: "12px", marginTop: "4px" }}>You can update your shop details or upload a new verification document below to apply again.</span>
+                </div>
+              </div>
+            </div>
+          )}
+          {seller.status === "SUSPENDED" && (
+            <div className="warning" style={{ background: "#faf5ff", borderColor: "#f3e8ff", color: "#6b21a8", padding: "16px", borderRadius: "8px", border: "1px solid" }}>
+              <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+                <span style={{ fontSize: "20px" }}>🚫</span>
+                <div>
+                  <strong style={{ display: "block" }}>Shop Suspended</strong>
+                  <span style={{ fontSize: "13px" }}>Reason: <strong>{seller.adminComment || "Suspended by Administrator."}</strong></span>
+                  <span style={{ display: "block", fontSize: "12px", marginTop: "4px" }}>Your products are currently hidden from the buyer marketplace. Please resolve this with admin.</span>
+                </div>
+              </div>
+            </div>
+          )}
+          {seller.status === "APPROVED" && (
+            <div className="warning" style={{ background: "#f0fdf4", borderColor: "#dcfce7", color: "#15803d", padding: "16px", borderRadius: "8px", border: "1px solid" }}>
+              <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+                <span style={{ fontSize: "20px" }}>✅</span>
+                <div>
+                  <strong style={{ display: "block" }}>Seller Account Approved</strong>
+                  <span style={{ fontSize: "13px" }}>Congratulations! Your store is fully verified and products are live on MaithilCart.</span>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Metrics */}
       <div className="dashboard-grid">
         <article className="metrics-card">
@@ -131,6 +260,139 @@ export function SellerConsole({
       <div className="dashboard-row-split">
         {/* Left Side: Forms and Inventory */}
         <div style={{ display: "flex", flexDirection: "column", gap: "30px" }}>
+          {/* Shop Settings & Verification */}
+          <section className="dashboard-section">
+            <h2>
+              <Store size={18} style={{ verticalAlign: "middle", marginRight: "8px", color: "var(--primary)" }} />
+              Shop Settings & Verification
+            </h2>
+
+            <form className="upload-card-form" onSubmit={handleSaveShopSettings}>
+              {shopError && (
+                <div className="warning" style={{ background: "#fef2f2", color: "#b91c1c", borderColor: "#fee2e2" }}>
+                  {shopError}
+                </div>
+              )}
+              {shopSuccess && (
+                <div className="warning" style={{ background: "#f0fdf4", color: "#15803d", borderColor: "#dcfce7" }}>
+                  {shopSuccess}
+                </div>
+              )}
+
+              <div className="grid-2col">
+                <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                  <label style={{ fontSize: "12px", fontWeight: 700 }}>Store Display Name</label>
+                  <input
+                    value={storeName}
+                    onChange={(e) => setStoreName(e.target.value)}
+                    placeholder="e.g. Urban Loom"
+                    className="auth-input"
+                    required
+                  />
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                  <label style={{ fontSize: "12px", fontWeight: 700 }}>Legal Business Name</label>
+                  <input
+                    value={legalName}
+                    onChange={(e) => setLegalName(e.target.value)}
+                    placeholder="e.g. Urban Loom Pvt Ltd"
+                    className="auth-input"
+                    required
+                  />
+                </div>
+              </div>
+
+              <div className="grid-2col">
+                <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                  <label style={{ fontSize: "12px", fontWeight: 700 }}>GSTIN (GST Number)</label>
+                  <input
+                    value={gstin}
+                    onChange={(e) => setGstin(e.target.value)}
+                    placeholder="e.g. 29ABCDE1234F1Z5"
+                    className="auth-input"
+                  />
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                  <label style={{ fontSize: "12px", fontWeight: 700 }}>Verification Document (PDF/Image)</label>
+                  <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+                    <label className="btn-action-small primary-style" style={{ display: "inline-flex", gap: "6px", alignItems: "center", cursor: "pointer", margin: 0 }}>
+                      <FileUp size={14} />
+                      Upload Doc
+                      <input
+                        type="file"
+                        accept=".pdf,.jpg,.jpeg,.png"
+                        onChange={(e) => handleFileUpload(e, "document")}
+                        style={{ display: "none" }}
+                      />
+                    </label>
+                    {documentUrl ? (
+                      <a href={documentUrl} target="_blank" rel="noreferrer" style={{ fontSize: "12px", color: "var(--primary)", display: "inline-flex", alignItems: "center", gap: "4px" }}>
+                        View Document <ExternalLink size={12} />
+                      </a>
+                    ) : (
+                      <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>No document uploaded</span>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Branding Customizations */}
+              <div style={{ borderTop: "1px solid var(--border-color)", paddingTop: "14px", marginTop: "10px" }}>
+                <h4 style={{ fontSize: "13px", fontWeight: 800, marginBottom: "12px", color: "var(--text-dark)" }}>Shop Branding</h4>
+                
+                <div style={{ display: "flex", gap: "30px", flexWrap: "wrap" }}>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "6px", flex: "1 1 200px" }}>
+                    <label style={{ fontSize: "12px", fontWeight: 700 }}>Shop Logo</label>
+                    <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
+                      <div style={{ width: "60px", height: "60px", borderRadius: "8px", border: "1px solid var(--border-color)", backgroundColor: "#fafafa", overflow: "hidden", display: "flex", alignItems: "center", justifyItems: "center" }}>
+                        {logoUrl ? (
+                          <img src={logoUrl} alt="Logo Preview" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                        ) : (
+                          <Image size={24} style={{ margin: "auto", color: "var(--text-muted)" }} />
+                        )}
+                      </div>
+                      <label className="btn-action-small" style={{ cursor: "pointer", display: "inline-flex", gap: "6px", alignItems: "center" }}>
+                        <Upload size={12} /> Upload Logo
+                        <input
+                          type="file"
+                          accept="image/*"
+                          onChange={(e) => handleFileUpload(e, "logo")}
+                          style={{ display: "none" }}
+                        />
+                      </label>
+                    </div>
+                  </div>
+
+                  <div style={{ display: "flex", flexDirection: "column", gap: "6px", flex: "2 1 300px" }}>
+                    <label style={{ fontSize: "12px", fontWeight: 700 }}>Shop Banner</label>
+                    <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
+                      <div style={{ height: "60px", flexGrow: 1, borderRadius: "8px", border: "1px solid var(--border-color)", backgroundColor: "#fafafa", overflow: "hidden", display: "flex", alignItems: "center", justifyItems: "center" }}>
+                        {bannerUrl ? (
+                          <img src={bannerUrl} alt="Banner Preview" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                        ) : (
+                          <Image size={24} style={{ margin: "auto", color: "var(--text-muted)" }} />
+                        )}
+                      </div>
+                      <label className="btn-action-small" style={{ cursor: "pointer", display: "inline-flex", gap: "6px", alignItems: "center" }}>
+                        <Upload size={12} /> Upload Banner
+                        <input
+                          type="file"
+                          accept="image/*"
+                          onChange={(e) => handleFileUpload(e, "banner")}
+                          style={{ display: "none" }}
+                        />
+                      </label>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <button className="btn-place-order" type="submit" disabled={savingShop} style={{ marginTop: "14px" }}>
+                {savingShop ? "Saving..." : "Save Shop Settings"}
+              </button>
+            </form>
+          </section>
+
           {/* Upload Product Form */}
           <section className="dashboard-section">
             <h2>

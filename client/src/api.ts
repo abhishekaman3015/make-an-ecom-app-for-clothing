@@ -1,4 +1,4 @@
-import type { CartItem, Order, OrderStatus, Payout, Product, Seller, User } from "./types";
+import type { Address, CartItem, Order, Payout, Product, Seller, User } from "./types";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "";
 
@@ -80,5 +80,28 @@ export const api = {
     request<{ ok: boolean }>(`/api/admin/sellers/${id}`, { method: "PATCH", body: JSON.stringify(payload) }, token),
   adminOrders: (token: string) => requestArray<Order>("/api/admin/orders", {}, token),
   updateProduct: (token: string, id: string, payload: { approved?: boolean; active?: boolean }) =>
-    request<{ ok: boolean }>(`/api/admin/products/${id}`, { method: "PATCH", body: JSON.stringify(payload) }, token)
+    request<{ ok: boolean }>(`/api/admin/products/${id}`, { method: "PATCH", body: JSON.stringify(payload) }, token),
+  updateSellerMe: (token: string, payload: Partial<Seller>) =>
+    request<{ ok: boolean }>("/api/seller/me", { method: "PATCH", body: JSON.stringify(payload) }, token),
+  getAddresses: (token: string) => requestArray<Address>("/api/user/addresses", {}, token),
+  createAddress: (token: string, payload: Omit<Address, "id" | "userId">) =>
+    request<Address>("/api/user/addresses", { method: "POST", body: JSON.stringify(payload) }, token),
+  removeAddress: (token: string, id: string) =>
+    request<void>(`/api/user/addresses/${id}`, { method: "DELETE" }, token),
+  updateProfile: (token: string, payload: { name?: string; phone?: string; avatarUrl?: string }) =>
+    request<User>("/api/user/profile", { method: "PATCH", body: JSON.stringify(payload) }, token),
+  upload: (file: File) => {
+    const formData = new FormData();
+    formData.append("file", file);
+    return fetch((import.meta.env.VITE_API_BASE_URL || "") + "/api/upload", {
+      method: "POST",
+      body: formData,
+    }).then(async (res) => {
+      if (!res.ok) {
+        const error = await res.json().catch(() => ({ message: res.statusText }));
+        throw new Error(error.message || "Upload failed");
+      }
+      return res.json() as Promise<{ url: string }>;
+    });
+  }
 };

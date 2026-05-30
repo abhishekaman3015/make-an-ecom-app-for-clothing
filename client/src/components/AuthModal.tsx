@@ -10,8 +10,15 @@ interface AuthModalProps {
 }
 
 export function AuthModal({ onClose, onAuth, initialMode = "login" }: AuthModalProps) {
-  const [mode, setMode] = useState<"login" | "signup">(initialMode);
-  const [role, setRole] = useState<"BUYER" | "SELLER">("BUYER");
+  const subdomain = React.useMemo(() => {
+    const host = window.location.hostname;
+    if (host.startsWith("admin.")) return "ADMIN";
+    if (host.startsWith("seller.")) return "SELLER";
+    return "BUYER";
+  }, []);
+
+  const [mode, setMode] = useState<"login" | "signup">(subdomain === "ADMIN" ? "login" : initialMode);
+  const [role, setRole] = useState<"BUYER" | "SELLER">(subdomain === "SELLER" ? "SELLER" : "BUYER");
   const [errorMsg, setErrorMsg] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -116,8 +123,8 @@ export function AuthModal({ onClose, onAuth, initialMode = "login" }: AuthModalP
         {/* Right Side: Forms */}
         <div className="auth-form-side">
           <div className="auth-header">
-            <h2>{mode === "login" ? "Login" : "Create Account"}</h2>
-            <p>{mode === "login" ? "Enter email & password to sign in" : "Register a new buyer or seller account"}</p>
+            <h2>{subdomain === "ADMIN" ? "Admin Login" : subdomain === "SELLER" ? (mode === "login" ? "Seller Login" : "Seller Signup") : (mode === "login" ? "Login" : "Create Account")}</h2>
+            <p>{subdomain === "ADMIN" ? "Enter admin credentials to sign in" : subdomain === "SELLER" ? (mode === "login" ? "Sign in to your Seller Studio" : "Register a new seller account") : (mode === "login" ? "Enter email & password to sign in" : "Register a new buyer account")}</p>
           </div>
 
           {errorMsg && (
@@ -137,22 +144,7 @@ export function AuthModal({ onClose, onAuth, initialMode = "login" }: AuthModalP
                     className="auth-input"
                     required
                   />
-                  <div className="role-selector">
-                    <button
-                      type="button"
-                      className={role === "BUYER" ? "active" : ""}
-                      onClick={() => setRole("BUYER")}
-                    >
-                      Buyer
-                    </button>
-                    <button
-                      type="button"
-                      className={role === "SELLER" ? "active" : ""}
-                      onClick={() => setRole("SELLER")}
-                    >
-                      Seller
-                    </button>
-                  </div>
+                  {/* Role selector is hidden since role is derived from subdomain */}
                 </>
               )}
 
@@ -223,40 +215,44 @@ export function AuthModal({ onClose, onAuth, initialMode = "login" }: AuthModalP
             </button>
           </form>
 
-          <div style={{ display: "flex", justifyContent: "center", marginTop: "12px", marginBottom: "12px" }}>
-            <GoogleLogin
-              onSuccess={async (credentialResponse) => {
-                if (credentialResponse.credential) {
-                  setLoading(true);
-                  setErrorMsg("");
-                  try {
-                    const payload = await api.googleLogin(credentialResponse.credential);
-                    onAuth(payload);
-                    onClose();
-                  } catch (err: any) {
-                    setErrorMsg(err.message || "Failed to authenticate with Google.");
-                  } finally {
-                    setLoading(false);
-                  }
-                }
-              }}
-              onError={() => {
-                setErrorMsg("Google Sign-In failed.");
-              }}
-              theme="outline"
-              shape="rectangular"
-              text="signin_with"
-              width="280"
-            />
-          </div>
+          {subdomain !== "ADMIN" && (
+            <>
+              <div style={{ display: "flex", justifyContent: "center", marginTop: "12px", marginBottom: "12px" }}>
+                <GoogleLogin
+                  onSuccess={async (credentialResponse) => {
+                    if (credentialResponse.credential) {
+                      setLoading(true);
+                      setErrorMsg("");
+                      try {
+                        const payload = await api.googleLogin(credentialResponse.credential);
+                        onAuth(payload);
+                        onClose();
+                      } catch (err: any) {
+                        setErrorMsg(err.message || "Failed to authenticate with Google.");
+                      } finally {
+                        setLoading(false);
+                      }
+                    }
+                  }}
+                  onError={() => {
+                    setErrorMsg("Google Sign-In failed.");
+                  }}
+                  theme="outline"
+                  shape="rectangular"
+                  text="signin_with"
+                  width="280"
+                />
+              </div>
 
-          <button
-            type="button"
-            className="btn-switch-mode"
-            onClick={() => setMode(mode === "login" ? "signup" : "login")}
-          >
-            {mode === "login" ? "New to MaithilCart? Create an account" : "Already have an account? Log in"}
-          </button>
+              <button
+                type="button"
+                className="btn-switch-mode"
+                onClick={() => setMode(mode === "login" ? "signup" : "login")}
+              >
+                {mode === "login" ? "New to MaithilCart? Create an account" : "Already have an account? Log in"}
+              </button>
+            </>
+          )}
 
           {/* Quick logins for testing */}
           {import.meta.env.DEV && (
@@ -264,19 +260,27 @@ export function AuthModal({ onClose, onAuth, initialMode = "login" }: AuthModalP
               <p className="quick-logins-title" style={{ textAlign: "center", marginBottom: "8px" }}>
                 Quick Demo Logins
               </p>
-              <div className="quick-login-grid" style={{ gridTemplateColumns: "repeat(4, 1fr)" }}>
-                <button onClick={() => handleQuickLogin("buyer")} disabled={loading}>
-                  Buyer
-                </button>
-                <button onClick={() => handleQuickLogin("seller")} disabled={loading}>
-                  Seller
-                </button>
-                <button onClick={() => handleQuickLogin("admin")} disabled={loading}>
-                  Admin
-                </button>
-                <button onClick={handleGoogleLogin} disabled={loading} style={{ background: "#4285f4", color: "white", fontSize: "10px", padding: "6px 2px" }}>
-                  Google (Mock)
-                </button>
+              <div className="quick-login-grid" style={{ gridTemplateColumns: subdomain === "BUYER" ? "repeat(2, 1fr)" : "1fr" }}>
+                {subdomain === "BUYER" && (
+                  <>
+                    <button onClick={() => handleQuickLogin("buyer")} disabled={loading}>
+                      Buyer
+                    </button>
+                    <button onClick={handleGoogleLogin} disabled={loading} style={{ background: "#4285f4", color: "white", fontSize: "10px", padding: "6px 2px" }}>
+                      Google (Mock)
+                    </button>
+                  </>
+                )}
+                {subdomain === "SELLER" && (
+                  <button onClick={() => handleQuickLogin("seller")} disabled={loading}>
+                    Seller
+                  </button>
+                )}
+                {subdomain === "ADMIN" && (
+                  <button onClick={() => handleQuickLogin("admin")} disabled={loading}>
+                    Admin
+                  </button>
+                )}
               </div>
             </div>
           )}

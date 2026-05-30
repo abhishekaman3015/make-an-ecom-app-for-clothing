@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -32,10 +33,12 @@ type app struct {
 }
 
 type user struct {
-	ID    string `json:"id"`
-	Name  string `json:"name"`
-	Email string `json:"email"`
-	Role  string `json:"role"`
+	ID        string  `json:"id"`
+	Name      string  `json:"name"`
+	Email     string  `json:"email"`
+	Role      string  `json:"role"`
+	AvatarURL *string `json:"avatarUrl"`
+	Phone     *string `json:"phone"`
 }
 
 type authContext struct {
@@ -120,22 +123,47 @@ func main() {
 		}
 	}
 
+	if err := os.MkdirAll("uploads", 0755); err != nil {
+		log.Fatal(err)
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", a.health)
+	
+	// File Upload Serving
+	mux.Handle("GET /uploads/", http.StripPrefix("/uploads/", http.FileServer(http.Dir("uploads"))))
+	mux.HandleFunc("POST /api/upload", a.upload)
+
+	// Auth & Profile
 	mux.HandleFunc("POST /api/auth/signup", a.signup)
 	mux.HandleFunc("POST /api/auth/login", a.login)
 	mux.HandleFunc("POST /api/auth/google", a.googleLogin)
+	mux.HandleFunc("PATCH /api/user/profile", a.withAuth("", a.updateProfile))
+
+	// User Addresses
+	mux.HandleFunc("GET /api/user/addresses", a.withAuth("BUYER", a.getAddresses))
+	mux.HandleFunc("POST /api/user/addresses", a.withAuth("BUYER", a.createAddress))
+	mux.HandleFunc("DELETE /api/user/addresses/{id}", a.withAuth("BUYER", a.deleteAddress))
+
+	// Catalog
 	mux.HandleFunc("GET /api/products", a.products)
+	
+	// Cart & Checkout
 	mux.HandleFunc("GET /api/cart", a.withAuth("BUYER", a.cart))
 	mux.HandleFunc("POST /api/cart", a.withAuth("BUYER", a.addCart))
 	mux.HandleFunc("PATCH /api/cart/{id}", a.withAuth("BUYER", a.updateCart))
 	mux.HandleFunc("DELETE /api/cart/{id}", a.withAuth("BUYER", a.deleteCart))
 	mux.HandleFunc("POST /api/checkout", a.withAuth("BUYER", a.checkout))
 	mux.HandleFunc("GET /api/orders", a.withAuth("", a.orders))
+	
+	// Seller endpoints
 	mux.HandleFunc("GET /api/seller/me", a.withAuth("SELLER", a.sellerMe))
+	mux.HandleFunc("PATCH /api/seller/me", a.withAuth("SELLER", a.updateSellerMe))
 	mux.HandleFunc("GET /api/seller/products", a.withAuth("SELLER", a.sellerProducts))
 	mux.HandleFunc("POST /api/seller/products", a.withAuth("SELLER", a.createProduct))
 	mux.HandleFunc("GET /api/seller/payouts", a.withAuth("SELLER", a.sellerPayouts))
+	
+	// Admin endpoints
 	mux.HandleFunc("GET /api/admin/sellers", a.withAuth("ADMIN", a.adminSellers))
 	mux.HandleFunc("PATCH /api/admin/sellers/{id}", a.withAuth("ADMIN", a.adminUpdateSeller))
 	mux.HandleFunc("GET /api/admin/orders", a.withAuth("ADMIN", a.adminOrders))
@@ -351,7 +379,7 @@ func (a *app) signup(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 	var u user
-	err = tx.QueryRow(r.Context(), "INSERT INTO users(name,email,password_hash,role,phone) VALUES($1,$2,$3,$4,$5) RETURNING id,name,email,role", req.Name, strings.ToLower(req.Email), string(hash), req.Role, req.Phone).Scan(&u.ID, &u.Name, &u.Email, &u.Role)
+	err = tx.QueryRow(r.Context(), "INSERT INTO users(name,email,password_hash,role,phone) VALUES($1,$2,$3,$4,$5) RETURNING id,name,email,role,phone,avatar_url", req.Name, strings.ToLower(req.Email), string(hash), req.Role, req.Phone).Scan(&u.ID, &u.Name, &u.Email, &u.Role, &u.Phone, &u.AvatarURL)
 	if err != nil {
 		errorJSON(w, 409, "email already exists")
 		return
@@ -382,7 +410,7 @@ func (a *app) login(w http.ResponseWriter, r *http.Request) {
 	}
 	var u user
 	var hash *string
-	err := a.db.QueryRow(r.Context(), "SELECT id,name,email,role,password_hash FROM users WHERE email=$1", strings.ToLower(req.Email)).Scan(&u.ID, &u.Name, &u.Email, &u.Role, &hash)
+	err := a.db.QueryRow(r.Context(), "SELECT id,name,email,role,password_hash,phone,avatar_url FROM users WHERE email=$1", strings.ToLower(req.Email)).Scan(&u.ID, &u.Name, &u.Email, &u.Role, &hash, &u.Phone, &u.AvatarURL)
 	if err != nil || hash == nil || bcrypt.CompareHashAndPassword([]byte(*hash), []byte(req.Password)) != nil {
 		errorJSON(w, http.StatusUnauthorized, "invalid email or password")
 		return
@@ -446,8 +474,8 @@ func (a *app) googleLogin(w http.ResponseWriter, r *http.Request) {
 
 	var u user
 	// 1. Check if user already exists with google_id
-	err := a.db.QueryRow(r.Context(), "SELECT id, name, email, role FROM users WHERE google_id = $1", googleID).
-		Scan(&u.ID, &u.Name, &u.Email, &u.Role)
+	err := a.db.QueryRow(r.Context(), "SELECT id, name, email, role, phone, avatar_url FROM users WHERE google_id = $1", googleID).
+		Scan(&u.ID, &u.Name, &u.Email, &u.Role, &u.Phone, &u.AvatarURL)
 	if err == nil {
 		token, _ := a.token(u.ID, u.Role)
 		writeJSON(w, http.StatusOK, map[string]any{"token": token, "user": u})
@@ -467,7 +495,7 @@ func (a *app) googleLogin(w http.ResponseWriter, r *http.Request) {
 		u.ID = existingID
 		u.Email = email
 		u.Role = existingRole
-		_ = a.db.QueryRow(r.Context(), "SELECT name FROM users WHERE id = $1", u.ID).Scan(&u.Name)
+		_ = a.db.QueryRow(r.Context(), "SELECT name, phone, avatar_url FROM users WHERE id = $1", u.ID).Scan(&u.Name, &u.Phone, &u.AvatarURL)
 
 		token, _ := a.token(u.ID, u.Role)
 		writeJSON(w, http.StatusOK, map[string]any{"token": token, "user": u})
@@ -485,9 +513,9 @@ func (a *app) googleLogin(w http.ResponseWriter, r *http.Request) {
 	err = tx.QueryRow(r.Context(), `
 		INSERT INTO users(name, email, role, google_id)
 		VALUES($1, $2, 'BUYER', $3)
-		RETURNING id, name, email, role`,
+		RETURNING id, name, email, role, phone, avatar_url`,
 		name, strings.ToLower(email), googleID,
-	).Scan(&u.ID, &u.Name, &u.Email, &u.Role)
+	).Scan(&u.ID, &u.Name, &u.Email, &u.Role, &u.Phone, &u.AvatarURL)
 	if err != nil {
 		errorJSON(w, http.StatusInternalServerError, "failed to create user account")
 		return
@@ -730,14 +758,30 @@ func (a *app) orders(w http.ResponseWriter, r *http.Request) {
 func (a *app) sellerMe(w http.ResponseWriter, r *http.Request) {
 	auth := mustAuth(r)
 	var out map[string]any
-	var id, store, status string
+	var id, store, status, legalName string
+	var logoURL, bannerURL, documentURL, adminComment, gstin *string
 	var canList, canPayout bool
-	err := a.db.QueryRow(r.Context(), "SELECT id,store_name,status,can_list_products,can_receive_payouts FROM sellers WHERE user_id=$1", auth.UserID).Scan(&id, &store, &status, &canList, &canPayout)
+	err := a.db.QueryRow(r.Context(), `
+		SELECT id, store_name, legal_name, coalesce(gstin, ''), status, can_list_products, can_receive_payouts, logo_url, banner_url, document_url, admin_comment
+		FROM sellers WHERE user_id=$1`, auth.UserID).Scan(
+			&id, &store, &legalName, &gstin, &status, &canList, &canPayout, &logoURL, &bannerURL, &documentURL, &adminComment)
 	if err != nil {
 		errorJSON(w, 404, "seller profile not found")
 		return
 	}
-	out = map[string]any{"id": id, "storeName": store, "status": status, "canListProducts": canList, "canReceivePayouts": canPayout}
+	out = map[string]any{
+		"id": id,
+		"storeName": store,
+		"legalName": legalName,
+		"gstin": gstin,
+		"status": status,
+		"canListProducts": canList,
+		"canReceivePayouts": canPayout,
+		"logoUrl": logoURL,
+		"bannerUrl": bannerURL,
+		"documentUrl": documentURL,
+		"adminComment": adminComment,
+	}
 	writeJSON(w, 200, out)
 }
 
@@ -856,7 +900,8 @@ func (a *app) sellerPayouts(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) adminSellers(w http.ResponseWriter, r *http.Request) {
-	rows, err := a.db.Query(r.Context(), `SELECT s.id,u.name,u.email,s.store_name,s.legal_name,coalesce(s.gstin,''),coalesce(s.payout_account,''),s.status,s.can_list_products,s.can_receive_payouts,s.commission_bps
+	rows, err := a.db.Query(r.Context(), `
+		SELECT s.id, u.name, u.email, s.store_name, s.legal_name, coalesce(s.gstin,''), coalesce(s.payout_account,''), s.status, s.can_list_products, s.can_receive_payouts, s.commission_bps, s.logo_url, s.banner_url, s.document_url, s.admin_comment
 		FROM sellers s JOIN users u ON u.id=s.user_id ORDER BY s.created_at DESC`)
 	if err != nil {
 		errorJSON(w, 500, "could not load sellers")
@@ -868,33 +913,107 @@ func (a *app) adminSellers(w http.ResponseWriter, r *http.Request) {
 		var id, name, email, store, legal, gstin, payout, status string
 		var canList, canPayout bool
 		var commission int
-		_ = rows.Scan(&id, &name, &email, &store, &legal, &gstin, &payout, &status, &canList, &canPayout, &commission)
-		out = append(out, map[string]any{"id": id, "name": name, "email": email, "storeName": store, "legalName": legal, "gstin": gstin, "payoutAccount": payout, "status": status, "canListProducts": canList, "canReceivePayouts": canPayout, "commissionBps": commission})
+		var logo, banner, document, comment *string
+		_ = rows.Scan(&id, &name, &email, &store, &legal, &gstin, &payout, &status, &canList, &canPayout, &commission, &logo, &banner, &document, &comment)
+		out = append(out, map[string]any{
+			"id": id,
+			"name": name,
+			"email": email,
+			"storeName": store,
+			"legalName": legal,
+			"gstin": gstin,
+			"payoutAccount": payout,
+			"status": status,
+			"canListProducts": canList,
+			"canReceivePayouts": canPayout,
+			"commissionBps": commission,
+			"logoUrl": logo,
+			"bannerUrl": banner,
+			"documentUrl": document,
+			"adminComment": comment,
+		})
 	}
 	writeJSON(w, 200, out)
 }
 
 func (a *app) adminUpdateSeller(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Status            string `json:"status"`
-		CanListProducts   bool   `json:"canListProducts"`
-		CanReceivePayouts bool   `json:"canReceivePayouts"`
-		CommissionBps     int    `json:"commissionBps"`
+		Status            string  `json:"status"`
+		CanListProducts   *bool   `json:"canListProducts"`
+		CanReceivePayouts *bool   `json:"canReceivePayouts"`
+		CommissionBps     *int    `json:"commissionBps"`
+		AdminComment      *string `json:"adminComment"`
 	}
 	if !decode(w, r, &req) {
 		return
 	}
-	if req.Status == "" {
-		req.Status = "PENDING"
-	}
-	if req.CommissionBps == 0 {
-		req.CommissionBps = 1200
-	}
-	_, err := a.db.Exec(r.Context(), "UPDATE sellers SET status=$1,can_list_products=$2,can_receive_payouts=$3,commission_bps=$4,updated_at=now() WHERE id=$5", req.Status, req.CanListProducts, req.CanReceivePayouts, req.CommissionBps, r.PathValue("id"))
+
+	tx, err := a.db.Begin(r.Context())
 	if err != nil {
-		errorJSON(w, 400, "could not update seller permissions")
+		errorJSON(w, 500, "could not start transaction")
 		return
 	}
+	defer tx.Rollback(r.Context())
+
+	var currentStatus string
+	var canList, canPayout bool
+	var commission int
+	var adminComment *string
+	err = tx.QueryRow(r.Context(), "SELECT status, can_list_products, can_receive_payouts, commission_bps, admin_comment FROM sellers WHERE id=$1", r.PathValue("id")).Scan(&currentStatus, &canList, &canPayout, &commission, &adminComment)
+	if err != nil {
+		errorJSON(w, 404, "seller not found")
+		return
+	}
+
+	status := req.Status
+	if status == "" {
+		status = currentStatus
+	}
+	
+	listVal := canList
+	if req.CanListProducts != nil {
+		listVal = *req.CanListProducts
+	} else if status == "APPROVED" {
+		listVal = true
+	} else if status == "SUSPENDED" || status == "REJECTED" || status == "PENDING" {
+		listVal = false
+	}
+
+	payoutVal := canPayout
+	if req.CanReceivePayouts != nil {
+		payoutVal = *req.CanReceivePayouts
+	} else if status == "APPROVED" {
+		payoutVal = true
+	} else if status == "SUSPENDED" || status == "REJECTED" || status == "PENDING" {
+		payoutVal = false
+	}
+
+	commVal := commission
+	if req.CommissionBps != nil {
+		commVal = *req.CommissionBps
+	}
+
+	commComment := adminComment
+	if req.AdminComment != nil {
+		commComment = req.AdminComment
+	}
+
+	_, err = tx.Exec(r.Context(), `
+		UPDATE sellers
+		SET status=$1, can_list_products=$2, can_receive_payouts=$3, commission_bps=$4, admin_comment=$5, updated_at=now()
+		WHERE id=$6`,
+		status, listVal, payoutVal, commVal, commComment, r.PathValue("id"),
+	)
+	if err != nil {
+		errorJSON(w, 500, "could not update seller record")
+		return
+	}
+
+	if err := tx.Commit(r.Context()); err != nil {
+		errorJSON(w, 500, "failed to save updates")
+		return
+	}
+
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
@@ -1095,4 +1214,330 @@ func randomHex(n int) string {
 		return strconv.FormatInt(time.Now().UnixNano(), 16)
 	}
 	return hex.EncodeToString(buf)
+}
+
+func (a *app) upload(w http.ResponseWriter, r *http.Request) {
+	r.ParseMultipartForm(10 << 20)
+
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		errorJSON(w, http.StatusBadRequest, "file is required")
+		return
+	}
+	defer file.Close()
+
+	ext := filepath.Ext(header.Filename)
+	allowed := map[string]bool{".jpg": true, ".jpeg": true, ".png": true, ".gif": true, ".pdf": true, ".svg": true}
+	if !allowed[strings.ToLower(ext)] {
+		errorJSON(w, http.StatusBadRequest, "invalid file type: only images and PDF are allowed")
+		return
+	}
+
+	filename := randomHex(16) + ext
+	filePath := filepath.Join("uploads", filename)
+
+	out, err := os.Create(filePath)
+	if err != nil {
+		errorJSON(w, http.StatusInternalServerError, "could not save file")
+		return
+	}
+	defer out.Close()
+
+	_, err = io.Copy(out, file)
+	if err != nil {
+		errorJSON(w, http.StatusInternalServerError, "failed to write file")
+		return
+	}
+
+	url := "/uploads/" + filename
+	writeJSON(w, http.StatusOK, map[string]string{"url": url})
+}
+
+func (a *app) updateSellerMe(w http.ResponseWriter, r *http.Request) {
+	auth := mustAuth(r)
+	var req struct {
+		StoreName   *string `json:"storeName"`
+		LegalName   *string `json:"legalName"`
+		GSTIN       *string `json:"gstin"`
+		LogoURL     *string `json:"logoUrl"`
+		BannerURL   *string `json:"bannerUrl"`
+		DocumentURL *string `json:"documentUrl"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+
+	tx, err := a.db.Begin(r.Context())
+	if err != nil {
+		errorJSON(w, 500, "could not start update")
+		return
+	}
+	defer tx.Rollback(r.Context())
+
+	query := "UPDATE sellers SET updated_at = now()"
+	args := []any{auth.UserID}
+	argIdx := 2
+
+	if req.StoreName != nil {
+		query += fmt.Sprintf(", store_name = $%d", argIdx)
+		args = append(args, *req.StoreName)
+		argIdx++
+	}
+	if req.LegalName != nil {
+		query += fmt.Sprintf(", legal_name = $%d", argIdx)
+		args = append(args, *req.LegalName)
+		argIdx++
+	}
+	if req.GSTIN != nil {
+		query += fmt.Sprintf(", gstin = $%d", argIdx)
+		args = append(args, *req.GSTIN)
+		argIdx++
+	}
+	if req.LogoURL != nil {
+		query += fmt.Sprintf(", logo_url = $%d", argIdx)
+		args = append(args, *req.LogoURL)
+		argIdx++
+	}
+	if req.BannerURL != nil {
+		query += fmt.Sprintf(", banner_url = $%d", argIdx)
+		args = append(args, *req.BannerURL)
+		argIdx++
+	}
+	if req.DocumentURL != nil {
+		query += fmt.Sprintf(", document_url = $%d", argIdx)
+		args = append(args, *req.DocumentURL)
+		argIdx++
+		query += fmt.Sprintf(", status = 'PENDING'")
+	}
+
+	query += " WHERE user_id = $1"
+
+	_, err = tx.Exec(r.Context(), query, args...)
+	if err != nil {
+		errorJSON(w, 500, "could not update seller profile")
+		return
+	}
+
+	if err := tx.Commit(r.Context()); err != nil {
+		errorJSON(w, 500, "could not save changes")
+		return
+	}
+
+	writeJSON(w, 200, map[string]any{"ok": true})
+}
+
+type address struct {
+	ID            string   `json:"id"`
+	UserID        string   `json:"userId"`
+	AddressName   string   `json:"addressName"`
+	RecipientName string   `json:"recipientName"`
+	Phone         string   `json:"phone"`
+	AddressLine1  string   `json:"addressLine1"`
+	AddressLine2  *string  `json:"addressLine2"`
+	City          string   `json:"city"`
+	State         string   `json:"state"`
+	PostalCode    string   `json:"postalCode"`
+	Country       string   `json:"country"`
+	Latitude      *float64 `json:"latitude"`
+	Longitude     *float64 `json:"longitude"`
+	IsDefault     bool     `json:"isDefault"`
+}
+
+func (a *app) getAddresses(w http.ResponseWriter, r *http.Request) {
+	auth := mustAuth(r)
+	rows, err := a.db.Query(r.Context(), `
+		SELECT id, user_id, address_name, recipient_name, phone, address_line1, address_line2, city, state, postal_code, country, latitude, longitude, is_default
+		FROM addresses WHERE user_id = $1 ORDER BY is_default DESC, created_at DESC`, auth.UserID)
+	if err != nil {
+		errorJSON(w, 500, "failed to get addresses")
+		return
+	}
+	defer rows.Close()
+
+	out := []address{}
+	for rows.Next() {
+		var addr address
+		err := rows.Scan(
+			&addr.ID, &addr.UserID, &addr.AddressName, &addr.RecipientName, &addr.Phone,
+			&addr.AddressLine1, &addr.AddressLine2, &addr.City, &addr.State, &addr.PostalCode,
+			&addr.Country, &addr.Latitude, &addr.Longitude, &addr.IsDefault,
+		)
+		if err != nil {
+			errorJSON(w, 500, "failed to read address")
+			return
+		}
+		out = append(out, addr)
+	}
+	writeJSON(w, 200, out)
+}
+
+func (a *app) createAddress(w http.ResponseWriter, r *http.Request) {
+	auth := mustAuth(r)
+	var req struct {
+		AddressName   string   `json:"addressName"`
+		RecipientName string   `json:"recipientName"`
+		Phone         string   `json:"phone"`
+		AddressLine1  string   `json:"addressLine1"`
+		AddressLine2  *string  `json:"addressLine2"`
+		City          string   `json:"city"`
+		State         string   `json:"state"`
+		PostalCode    string   `json:"postalCode"`
+		Country       string   `json:"country"`
+		Latitude      *float64 `json:"latitude"`
+		Longitude     *float64 `json:"longitude"`
+		IsDefault     bool     `json:"isDefault"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+
+	if req.AddressName == "" || req.RecipientName == "" || req.Phone == "" || req.AddressLine1 == "" || req.City == "" || req.State == "" || req.PostalCode == "" {
+		errorJSON(w, http.StatusBadRequest, "addressName, recipientName, phone, addressLine1, city, state and postalCode are required")
+		return
+	}
+
+	tx, err := a.db.Begin(r.Context())
+	if err != nil {
+		errorJSON(w, 500, "could not start transaction")
+		return
+	}
+	defer tx.Rollback(r.Context())
+
+	if req.IsDefault {
+		_, err = tx.Exec(r.Context(), "UPDATE addresses SET is_default = false WHERE user_id = $1", auth.UserID)
+		if err != nil {
+			errorJSON(w, 500, "could not update other addresses")
+			return
+		}
+	} else {
+		var count int
+		_ = tx.QueryRow(r.Context(), "SELECT count(*) FROM addresses WHERE user_id = $1", auth.UserID).Scan(&count)
+		if count == 0 {
+			req.IsDefault = true
+		}
+	}
+
+	var addr address
+	err = tx.QueryRow(r.Context(), `
+		INSERT INTO addresses(user_id, address_name, recipient_name, phone, address_line1, address_line2, city, state, postal_code, country, latitude, longitude, is_default)
+		VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		RETURNING id, user_id, address_name, recipient_name, phone, address_line1, address_line2, city, state, postal_code, country, latitude, longitude, is_default`,
+		auth.UserID, req.AddressName, req.RecipientName, req.Phone, req.AddressLine1, req.AddressLine2, req.City, req.State, req.PostalCode, req.Country, req.Latitude, req.Longitude, req.IsDefault,
+	).Scan(
+		&addr.ID, &addr.UserID, &addr.AddressName, &addr.RecipientName, &addr.Phone,
+		&addr.AddressLine1, &addr.AddressLine2, &addr.City, &addr.State, &addr.PostalCode,
+		&addr.Country, &addr.Latitude, &addr.Longitude, &addr.IsDefault,
+	)
+	if err != nil {
+		errorJSON(w, 500, "could not create address record")
+		return
+	}
+
+	if err := tx.Commit(r.Context()); err != nil {
+		errorJSON(w, 500, "failed to save address")
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, addr)
+}
+
+func (a *app) deleteAddress(w http.ResponseWriter, r *http.Request) {
+	auth := mustAuth(r)
+	addrID := r.PathValue("id")
+
+	tx, err := a.db.Begin(r.Context())
+	if err != nil {
+		errorJSON(w, 500, "could not start transaction")
+		return
+	}
+	defer tx.Rollback(r.Context())
+
+	var isDefault bool
+	err = tx.QueryRow(r.Context(), "SELECT is_default FROM addresses WHERE id = $1 AND user_id = $2", addrID, auth.UserID).Scan(&isDefault)
+	if err != nil {
+		errorJSON(w, 404, "address not found")
+		return
+	}
+
+	_, err = tx.Exec(r.Context(), "DELETE FROM addresses WHERE id = $1 AND user_id = $2", addrID, auth.UserID)
+	if err != nil {
+		errorJSON(w, 500, "failed to delete address")
+		return
+	}
+
+	if isDefault {
+		var newDefaultID string
+		err = tx.QueryRow(r.Context(), "SELECT id FROM addresses WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1", auth.UserID).Scan(&newDefaultID)
+		if err == nil && newDefaultID != "" {
+			_, _ = tx.Exec(r.Context(), "UPDATE addresses SET is_default = true WHERE id = $1", newDefaultID)
+		}
+	}
+
+	if err := tx.Commit(r.Context()); err != nil {
+		errorJSON(w, 500, "failed to delete address")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *app) updateProfile(w http.ResponseWriter, r *http.Request) {
+	auth := mustAuth(r)
+	var req struct {
+		Name      *string `json:"name"`
+		Phone     *string `json:"phone"`
+		AvatarURL *string `json:"avatarUrl"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+
+	tx, err := a.db.Begin(r.Context())
+	if err != nil {
+		errorJSON(w, 500, "could not start update")
+		return
+	}
+	defer tx.Rollback(r.Context())
+
+	query := "UPDATE users SET updated_at = now()"
+	args := []any{auth.UserID}
+	argIdx := 2
+
+	if req.Name != nil {
+		query += fmt.Sprintf(", name = $%d", argIdx)
+		args = append(args, *req.Name)
+		argIdx++
+	}
+	if req.Phone != nil {
+		query += fmt.Sprintf(", phone = $%d", argIdx)
+		args = append(args, *req.Phone)
+		argIdx++
+	}
+	if req.AvatarURL != nil {
+		query += fmt.Sprintf(", avatar_url = $%d", argIdx)
+		args = append(args, *req.AvatarURL)
+		argIdx++
+	}
+
+	query += " WHERE id = $1"
+
+	_, err = tx.Exec(r.Context(), query, args...)
+	if err != nil {
+		errorJSON(w, 500, "could not update profile")
+		return
+	}
+
+	var u user
+	err = tx.QueryRow(r.Context(), "SELECT id, name, email, role, phone, avatar_url FROM users WHERE id = $1", auth.UserID).Scan(&u.ID, &u.Name, &u.Email, &u.Role, &u.Phone, &u.AvatarURL)
+	if err != nil {
+		errorJSON(w, 500, "could not reload user info")
+		return
+	}
+
+	if err := tx.Commit(r.Context()); err != nil {
+		errorJSON(w, 500, "could not save profile details")
+		return
+	}
+
+	writeJSON(w, 200, u)
 }

@@ -11,13 +11,14 @@ import { ProductDetailModal } from "./components/ProductDetailModal";
 import { BagCheckout } from "./components/BagCheckout";
 import { SellerConsole } from "./components/SellerConsole";
 import { AdminConsole } from "./components/AdminConsole";
+import { UserProfile } from "./components/UserProfile";
 
 const rupee = new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 });
 const money = (cents: number) => rupee.format(cents / 100);
 
 const stored = localStorage.getItem("maithilcart-session");
 type Session = { token: string; user: User };
-type View = "shop" | "orders" | "seller" | "admin" | "bag";
+type View = "shop" | "orders" | "seller" | "admin" | "bag" | "profile";
 
 export function App() {
   const [session, setSession] = useState<Session | null>(stored ? JSON.parse(stored) : null);
@@ -41,6 +42,45 @@ export function App() {
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [authOpen, setAuthOpen] = useState(false);
   const [authMode, setAuthMode] = useState<"login" | "signup">("login");
+
+  const subdomain = useMemo(() => {
+    const host = window.location.hostname;
+    if (host.startsWith("admin.")) return "ADMIN";
+    if (host.startsWith("seller.")) return "SELLER";
+    return "BUYER";
+  }, []);
+
+  useEffect(() => {
+    if (subdomain === "ADMIN") {
+      setView("admin");
+      if (!session) {
+        setAuthMode("login");
+        setAuthOpen(true);
+      } else if (session.user.role !== "ADMIN") {
+        setNotice("Access Denied: Please log in with an Admin account.");
+        setSession(null);
+        localStorage.removeItem("maithilcart-session");
+        setAuthMode("login");
+        setAuthOpen(true);
+      }
+    } else if (subdomain === "SELLER") {
+      setView("seller");
+      if (!session) {
+        setAuthMode("login");
+        setAuthOpen(true);
+      } else if (session.user.role !== "SELLER") {
+        setNotice("Access Denied: Please log in with a Seller account.");
+        setSession(null);
+        localStorage.removeItem("maithilcart-session");
+        setAuthMode("login");
+        setAuthOpen(true);
+      }
+    } else {
+      if (view === "admin" || view === "seller") {
+        setView("shop");
+      }
+    }
+  }, [subdomain, session?.user.role]);
 
   const role = session?.user.role;
   const isBuyer = role === "BUYER" || !session;
@@ -105,6 +145,14 @@ export function App() {
     } else {
       localStorage.removeItem("maithilcart-session");
       setNotice("Logged out successfully.");
+    }
+  }
+
+  function updateSessionUser(updatedUser: User) {
+    if (session) {
+      const newSession = { ...session, user: updatedUser };
+      setSession(newSession);
+      localStorage.setItem("maithilcart-session", JSON.stringify(newSession));
     }
   }
 
@@ -427,6 +475,14 @@ export function App() {
             orders={orders}
             products={products}
             refresh={refresh}
+          />
+        )}
+
+        {view === "profile" && session && (
+          <UserProfile
+            token={session.token}
+            user={session.user}
+            onUpdateSession={updateSessionUser}
           />
         )}
       </div>
