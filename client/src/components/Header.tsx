@@ -59,9 +59,9 @@ export function Header({
       <header className="topbar">
         {/* Brand Logo */}
         <div className="brand" onClick={() => setView("shop")}>
-          <img src="/assets/maithilcart-logo.jpg" alt="MaithilCart Logo" className="brand-logo-img" />
+          <img src="/assets/maithilcart-logo.jpg" alt="Maithil Cart Logo" className="brand-logo-img" />
           <div className="brand-text">
-            <h1>MaithilCart</h1>
+            <h1>Maithil Cart</h1>
             <p>Fashion Hub</p>
           </div>
         </div>
@@ -153,7 +153,7 @@ export function Header({
                     <button className="logout-btn" onClick={() => { onTriggerAuth(); setDropdownOpen(false); }}>
                       Login / Signup
                     </button>
-                    {import.meta.env.DEV && (
+                     {import.meta.env.DEV && (window.location.hostname.includes("localhost") || window.location.hostname.includes("127.0.0.1") || window.location.hostname.includes(".local")) && (
                       <>
                         <p className="quick-logins-title">Quick Demo Login</p>
                         <div className="quick-login-grid">

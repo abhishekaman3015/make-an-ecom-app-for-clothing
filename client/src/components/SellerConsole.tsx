@@ -213,7 +213,7 @@ export function SellerConsole({
                 <span style={{ fontSize: "20px" }}>✅</span>
                 <div>
                   <strong style={{ display: "block" }}>Seller Account Approved</strong>
-                  <span style={{ fontSize: "13px" }}>Congratulations! Your store is fully verified and products are live on MaithilCart.</span>
+                  <span style={{ fontSize: "13px" }}>Congratulations! Your store is fully verified and products are live on Maithil Cart.</span>
                 </div>
               </div>
             </div>

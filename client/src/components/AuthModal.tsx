@@ -96,7 +96,7 @@ export function AuthModal({ onClose, onAuth, initialMode = "login" }: AuthModalP
         {/* Left Side: Brand Banner */}
         <div className="auth-sidebar-banner">
           <div>
-            <h3>MaithilCart</h3>
+            <h3>Maithil Cart</h3>
             <p style={{ marginTop: "12px", fontSize: "15px", fontWeight: 600 }}>
               Join the family of 10M+ fashion lovers!
             </p>
@@ -249,13 +249,13 @@ export function AuthModal({ onClose, onAuth, initialMode = "login" }: AuthModalP
                 className="btn-switch-mode"
                 onClick={() => setMode(mode === "login" ? "signup" : "login")}
               >
-                {mode === "login" ? "New to MaithilCart? Create an account" : "Already have an account? Log in"}
+                {mode === "login" ? "New to Maithil Cart? Create an account" : "Already have an account? Log in"}
               </button>
             </>
           )}
 
           {/* Quick logins for testing */}
-          {import.meta.env.DEV && (
+          {import.meta.env.DEV && (window.location.hostname.includes("localhost") || window.location.hostname.includes("127.0.0.1") || window.location.hostname.includes(".local")) && (
             <div style={{ marginTop: "24px", paddingTop: "16px", borderTop: "1px solid var(--border-color)" }}>
               <p className="quick-logins-title" style={{ textAlign: "center", marginBottom: "8px" }}>
                 Quick Demo Logins

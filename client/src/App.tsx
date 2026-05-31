@@ -510,14 +510,14 @@ export function App() {
             </ul>
           </div>
           <div>
-            <h4 style={{ color: "var(--text-dark)", textTransform: "uppercase", marginBottom: "16px", fontWeight: 700 }}>Experience MaithilCart App</h4>
+            <h4 style={{ color: "var(--text-dark)", textTransform: "uppercase", marginBottom: "16px", fontWeight: 700 }}>Experience Maithil Cart App</h4>
             <p style={{ maxWidth: "240px", lineHeight: 1.5 }}>
               A premium, high-speed fashion marketplace designed for absolute convenience.
             </p>
           </div>
         </div>
         <hr style={{ border: "none", borderTop: "1px solid var(--border-color)", margin: "30px 0" }} />
-        <p style={{ textAlign: "center" }}>© 2026 MaithilCart Marketplace. Built with React & Go.</p>
+        <p style={{ textAlign: "center" }}>© 2026 Maithil Cart Marketplace. Built with React & Go.</p>
       </footer>
     </main>
   );
