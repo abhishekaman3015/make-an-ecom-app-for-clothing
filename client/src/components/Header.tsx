@@ -54,11 +54,22 @@ export function Header({
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
+  const handleBrandClick = () => {
+    if (subdomain === "ADMIN") {
+      setView("admin");
+    } else if (subdomain === "SELLER") {
+      setView("seller");
+    } else {
+      setQuery("");
+      setView("shop");
+    }
+  };
+
   return (
     <>
       <header className="topbar">
         {/* Brand Logo */}
-        <div className="brand" onClick={() => setView("shop")}>
+        <div className="brand" onClick={handleBrandClick}>
           <img src="/assets/maithilcart-logo.jpg" alt="Maithil Cart Logo" className="brand-logo-img" />
           <div className="brand-text">
             <h1>Maithil Cart</h1>
