@@ -1,12 +1,20 @@
 package main
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"golang.org/x/image/draw"
+	"image/jpeg"
+	_ "image/png"
 	"io"
 	"log"
 	"net/http"
@@ -17,9 +25,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/pdfcpu/pdfcpu/pkg/api"
 	"golang.org/x/crypto/bcrypt"
 	"google.golang.org/api/oauth2/v2"
 	"google.golang.org/api/option"
@@ -30,6 +43,11 @@ type app struct {
 	jwtSecret       []byte
 	corsOrigins     []string
 	paymentProvider string
+	encryptionKey   []byte
+	r2Client        *s3.Client
+	r2PresignClient *s3.PresignClient
+	r2BucketName    string
+	r2PublicDomain  string
 }
 
 type user struct {
@@ -107,11 +125,61 @@ func main() {
 	}
 	defer db.Close()
 
+	encKeyStr := env("ENCRYPTION_KEY", "")
+	var encKey []byte
+	if encKeyStr == "" {
+		encKey = []byte("dev-encryption-key-32-characters")
+		log.Println("WARNING: ENCRYPTION_KEY environment variable is not set. Using fallback development key.")
+	} else {
+		var err error
+		encKey, err = hex.DecodeString(encKeyStr)
+		if err != nil || len(encKey) != 32 {
+			if len(encKeyStr) == 32 {
+				encKey = []byte(encKeyStr)
+			} else {
+				log.Fatal("ENCRYPTION_KEY must be a 32-byte hex-encoded string or a 32-character plaintext string")
+			}
+		}
+	}
+
+	r2AccountID := env("R2_ACCOUNT_ID", "")
+	r2AccessKey := env("R2_ACCESS_KEY_ID", "")
+	r2SecretKey := env("R2_SECRET_ACCESS_KEY", "")
+	r2BucketName := env("R2_BUCKET_NAME", "")
+	r2PublicDomain := env("R2_PUBLIC_DOMAIN", "")
+
+	var r2Client *s3.Client
+	var r2PresignClient *s3.PresignClient
+
+	if r2AccountID != "" && r2AccessKey != "" && r2SecretKey != "" && r2BucketName != "" {
+		r2Endpoint := fmt.Sprintf("https://%s.r2.cloudflarestorage.com", r2AccountID)
+		cfg, err := config.LoadDefaultConfig(ctx,
+			config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(r2AccessKey, r2SecretKey, "")),
+			config.WithRegion("auto"),
+		)
+		if err != nil {
+			log.Printf("ERROR loading R2 SDK config: %v\n", err)
+		} else {
+			r2Client = s3.NewFromConfig(cfg, func(o *s3.Options) {
+				o.BaseEndpoint = aws.String(r2Endpoint)
+			})
+			r2PresignClient = s3.NewPresignClient(r2Client)
+			log.Println("SUCCESS: Cloudflare R2 / S3 client initialized.")
+		}
+	} else {
+		log.Println("WARNING: Cloudflare R2 environment variables are missing. Using local uploads fallback.")
+	}
+
 	a := &app{
 		db:              db,
 		jwtSecret:       []byte(env("JWT_SECRET", "dev-secret-change-me")),
 		corsOrigins:     parseOrigins(env("CORS_ORIGIN", "http://localhost:5173,http://127.0.0.1:5173")),
 		paymentProvider: env("PAYMENT_PROVIDER", "mock"),
+		encryptionKey:   encKey,
+		r2Client:        r2Client,
+		r2PresignClient: r2PresignClient,
+		r2BucketName:    r2BucketName,
+		r2PublicDomain:  r2PublicDomain,
 	}
 
 	if err := a.migrate(ctx); err != nil {
@@ -133,6 +201,7 @@ func main() {
 	// File Upload Serving
 	mux.Handle("GET /uploads/", http.StripPrefix("/uploads/", http.FileServer(http.Dir("uploads"))))
 	mux.HandleFunc("POST /api/upload", a.upload)
+	mux.HandleFunc("POST /api/upload/presign", a.withAuth("", a.presignUpload))
 
 	// Auth & Profile
 	mux.HandleFunc("POST /api/auth/signup", a.signup)
@@ -171,7 +240,7 @@ func main() {
 
 	port := env("PORT", "8080")
 	log.Printf("MaithilCart API listening on :%s", port)
-	log.Fatal(http.ListenAndServe(":"+port, a.cors(mux)))
+	log.Fatal(http.ListenAndServe(":"+port, a.gzipMiddleware(a.cors(mux))))
 }
 
 func (a *app) migrate(ctx context.Context) error {
@@ -214,17 +283,19 @@ func (a *app) seed(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	encPhoneBuyer, _ := a.encrypt("9999999999")
 	err = a.db.QueryRow(ctx, `INSERT INTO users(name,email,password_hash,role,phone)
 		VALUES($1,$2,$3,'BUYER',$4)
 		ON CONFLICT(email) DO UPDATE SET name=excluded.name,password_hash=excluded.password_hash,role=excluded.role,phone=excluded.phone,updated_at=now()
-		RETURNING id`, "Aarav Buyer", "buyer@maithilcart.test", string(buyerPass), "9999999999").Scan(&buyerID)
+		RETURNING id`, "Aarav Buyer", "buyer@maithilcart.test", string(buyerPass), encPhoneBuyer).Scan(&buyerID)
 	if err != nil {
 		return err
 	}
+	encPhoneSeller, _ := a.encrypt("8888888888")
 	err = a.db.QueryRow(ctx, `INSERT INTO users(name,email,password_hash,role,phone)
 		VALUES($1,$2,$3,'SELLER',$4)
 		ON CONFLICT(email) DO UPDATE SET name=excluded.name,password_hash=excluded.password_hash,role=excluded.role,phone=excluded.phone,updated_at=now()
-		RETURNING id`, "Nisha Seller", "seller@maithilcart.test", string(sellerPass), "8888888888").Scan(&sellerUserID)
+		RETURNING id`, "Nisha Seller", "seller@maithilcart.test", string(sellerPass), encPhoneSeller).Scan(&sellerUserID)
 	if err != nil {
 		return err
 	}
@@ -381,6 +452,31 @@ func (a *app) signup(w http.ResponseWriter, r *http.Request) {
 		errorJSON(w, http.StatusBadRequest, "name, email and password are required")
 		return
 	}
+	emailRegex := regexp.MustCompile(`^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$`)
+	if !emailRegex.MatchString(req.Email) {
+		errorJSON(w, http.StatusBadRequest, "invalid email format")
+		return
+	}
+	if req.Phone != "" {
+		phoneRegex := regexp.MustCompile(`^\d{10}$`)
+		if !phoneRegex.MatchString(req.Phone) {
+			errorJSON(w, http.StatusBadRequest, "phone number must be exactly 10 digits")
+			return
+		}
+	}
+	if req.Role == "SELLER" {
+		if req.StoreName == "" || req.LegalName == "" {
+			errorJSON(w, http.StatusBadRequest, "storeName and legalName are required for sellers")
+			return
+		}
+		if req.GSTIN != "" {
+			gstinRegex := regexp.MustCompile(`^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$`)
+			if !gstinRegex.MatchString(strings.ToUpper(req.GSTIN)) {
+				errorJSON(w, http.StatusBadRequest, "invalid GSTIN format")
+				return
+			}
+		}
+	}
 	hash, _ := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	tx, err := a.db.Begin(r.Context())
 	if err != nil {
@@ -389,16 +485,18 @@ func (a *app) signup(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 	var u user
-	err = tx.QueryRow(r.Context(), "INSERT INTO users(name,email,password_hash,role,phone) VALUES($1,$2,$3,$4,$5) RETURNING id,name,email,role,phone,avatar_url", req.Name, strings.ToLower(req.Email), string(hash), req.Role, req.Phone).Scan(&u.ID, &u.Name, &u.Email, &u.Role, &u.Phone, &u.AvatarURL)
+	encPhone, _ := a.encrypt(req.Phone)
+	var dbPhone *string
+	err = tx.QueryRow(r.Context(), "INSERT INTO users(name,email,password_hash,role,phone) VALUES($1,$2,$3,$4,$5) RETURNING id,name,email,role,phone,avatar_url", req.Name, strings.ToLower(req.Email), string(hash), req.Role, encPhone).Scan(&u.ID, &u.Name, &u.Email, &u.Role, &dbPhone, &u.AvatarURL)
 	if err != nil {
 		errorJSON(w, 409, "email already exists")
 		return
 	}
+	if dbPhone != nil {
+		decPhone, _ := a.decrypt(*dbPhone)
+		u.Phone = &decPhone
+	}
 	if req.Role == "SELLER" {
-		if req.StoreName == "" || req.LegalName == "" {
-			errorJSON(w, 400, "storeName and legalName are required for sellers")
-			return
-		}
 		_, err = tx.Exec(r.Context(), "INSERT INTO sellers(user_id,store_name,legal_name,gstin,payout_account) VALUES($1,$2,$3,$4,$5)", u.ID, req.StoreName, req.LegalName, req.GSTIN, req.PayoutAccount)
 		if err != nil {
 			errorJSON(w, 500, "could not create seller profile")
@@ -420,10 +518,15 @@ func (a *app) login(w http.ResponseWriter, r *http.Request) {
 	}
 	var u user
 	var hash *string
-	err := a.db.QueryRow(r.Context(), "SELECT id,name,email,role,password_hash,phone,avatar_url FROM users WHERE email=$1", strings.ToLower(req.Email)).Scan(&u.ID, &u.Name, &u.Email, &u.Role, &hash, &u.Phone, &u.AvatarURL)
+	var dbPhone *string
+	err := a.db.QueryRow(r.Context(), "SELECT id,name,email,role,password_hash,phone,avatar_url FROM users WHERE email=$1", strings.ToLower(req.Email)).Scan(&u.ID, &u.Name, &u.Email, &u.Role, &hash, &dbPhone, &u.AvatarURL)
 	if err != nil || hash == nil || bcrypt.CompareHashAndPassword([]byte(*hash), []byte(req.Password)) != nil {
 		errorJSON(w, http.StatusUnauthorized, "invalid email or password")
 		return
+	}
+	if dbPhone != nil {
+		decPhone, _ := a.decrypt(*dbPhone)
+		u.Phone = &decPhone
 	}
 	token, _ := a.token(u.ID, u.Role)
 	writeJSON(w, http.StatusOK, map[string]any{"token": token, "user": u})
@@ -484,9 +587,14 @@ func (a *app) googleLogin(w http.ResponseWriter, r *http.Request) {
 
 	var u user
 	// 1. Check if user already exists with google_id
+	var dbPhone *string
 	err := a.db.QueryRow(r.Context(), "SELECT id, name, email, role, phone, avatar_url FROM users WHERE google_id = $1", googleID).
-		Scan(&u.ID, &u.Name, &u.Email, &u.Role, &u.Phone, &u.AvatarURL)
+		Scan(&u.ID, &u.Name, &u.Email, &u.Role, &dbPhone, &u.AvatarURL)
 	if err == nil {
+		if dbPhone != nil {
+			decPhone, _ := a.decrypt(*dbPhone)
+			u.Phone = &decPhone
+		}
 		token, _ := a.token(u.ID, u.Role)
 		writeJSON(w, http.StatusOK, map[string]any{"token": token, "user": u})
 		return
@@ -505,7 +613,12 @@ func (a *app) googleLogin(w http.ResponseWriter, r *http.Request) {
 		u.ID = existingID
 		u.Email = email
 		u.Role = existingRole
-		_ = a.db.QueryRow(r.Context(), "SELECT name, phone, avatar_url FROM users WHERE id = $1", u.ID).Scan(&u.Name, &u.Phone, &u.AvatarURL)
+		var dbPhone2 *string
+		_ = a.db.QueryRow(r.Context(), "SELECT name, phone, avatar_url FROM users WHERE id = $1", u.ID).Scan(&u.Name, &dbPhone2, &u.AvatarURL)
+		if dbPhone2 != nil {
+			decPhone, _ := a.decrypt(*dbPhone2)
+			u.Phone = &decPhone
+		}
 
 		token, _ := a.token(u.ID, u.Role)
 		writeJSON(w, http.StatusOK, map[string]any{"token": token, "user": u})
@@ -520,15 +633,20 @@ func (a *app) googleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 
+	var dbPhone3 *string
 	err = tx.QueryRow(r.Context(), `
 		INSERT INTO users(name, email, role, google_id)
 		VALUES($1, $2, 'BUYER', $3)
 		RETURNING id, name, email, role, phone, avatar_url`,
 		name, strings.ToLower(email), googleID,
-	).Scan(&u.ID, &u.Name, &u.Email, &u.Role, &u.Phone, &u.AvatarURL)
+	).Scan(&u.ID, &u.Name, &u.Email, &u.Role, &dbPhone3, &u.AvatarURL)
 	if err != nil {
 		errorJSON(w, http.StatusInternalServerError, "failed to create user account")
 		return
+	}
+	if dbPhone3 != nil {
+		decPhone, _ := a.decrypt(*dbPhone3)
+		u.Phone = &decPhone
 	}
 
 	if err := tx.Commit(r.Context()); err != nil {
@@ -654,6 +772,11 @@ func (a *app) checkout(w http.ResponseWriter, r *http.Request) {
 		errorJSON(w, 400, "shipping details are required")
 		return
 	}
+	phoneRegex := regexp.MustCompile(`^\d{10}$`)
+	if !phoneRegex.MatchString(req.ShippingPhone) {
+		errorJSON(w, http.StatusBadRequest, "shipping phone number must be exactly 10 digits")
+		return
+	}
 	tx, err := a.db.BeginTx(r.Context(), pgx.TxOptions{})
 	if err != nil {
 		errorJSON(w, 500, "could not start checkout")
@@ -696,9 +819,12 @@ func (a *app) checkout(w http.ResponseWriter, r *http.Request) {
 		shipping = 9900
 	}
 	total := subtotal + shipping
+	encName, _ := a.encrypt(req.ShippingName)
+	encPhone, _ := a.encrypt(req.ShippingPhone)
+	encAddress, _ := a.encrypt(req.ShippingAddress)
 	var orderID string
 	err = tx.QueryRow(r.Context(), `INSERT INTO orders(buyer_id,status,subtotal_cents,shipping_cents,total_cents,shipping_name,shipping_phone,shipping_address)
-		VALUES($1,'PAID',$2,$3,$4,$5,$6,$7) RETURNING id`, auth.UserID, subtotal, shipping, total, req.ShippingName, req.ShippingPhone, req.ShippingAddress).Scan(&orderID)
+		VALUES($1,'PAID',$2,$3,$4,$5,$6,$7) RETURNING id`, auth.UserID, subtotal, shipping, total, encName, encPhone, encAddress).Scan(&orderID)
 	if err != nil {
 		errorJSON(w, 500, "could not create order")
 		return
@@ -1068,6 +1194,9 @@ func (a *app) scanOrders(ctx context.Context, rows pgx.Rows) ([]order, error) {
 		if err := rows.Scan(&o.ID, &o.Status, &o.SubtotalCents, &o.ShippingCents, &o.TotalCents, &o.ShippingName, &o.ShippingPhone, &o.ShippingAddress, &o.PaymentStatus, &o.CreatedAt); err != nil {
 			return nil, err
 		}
+		o.ShippingName, _ = a.decrypt(o.ShippingName)
+		o.ShippingPhone, _ = a.decrypt(o.ShippingPhone)
+		o.ShippingAddress, _ = a.decrypt(o.ShippingAddress)
 		itemRows, err := a.db.Query(ctx, `SELECT oi.id,p.title,s.store_name,pv.size,pv.color,oi.quantity,oi.unit_price_cents,oi.seller_amount_cents
 			FROM order_items oi JOIN products p ON p.id=oi.product_id JOIN sellers s ON s.id=oi.seller_id JOIN product_variants pv ON pv.id=oi.variant_id WHERE oi.order_id=$1`, o.ID)
 		if err != nil {
@@ -1236,31 +1365,119 @@ func (a *app) upload(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	ext := filepath.Ext(header.Filename)
+	ext := strings.ToLower(filepath.Ext(header.Filename))
 	allowed := map[string]bool{".jpg": true, ".jpeg": true, ".png": true, ".gif": true, ".pdf": true, ".svg": true}
-	if !allowed[strings.ToLower(ext)] {
+	if !allowed[ext] {
 		errorJSON(w, http.StatusBadRequest, "invalid file type: only images and PDF are allowed")
 		return
 	}
 
-	filename := randomHex(16) + ext
-	filePath := filepath.Join("uploads", filename)
+	var processedBytes []byte
+	saveExt := ext
 
-	out, err := os.Create(filePath)
-	if err != nil {
-		errorJSON(w, http.StatusInternalServerError, "could not save file")
+	if ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".gif" {
+		processedBytes, err = compressImage(file)
+		if err != nil {
+			errorJSON(w, http.StatusInternalServerError, "failed to compress image: "+err.Error())
+			return
+		}
+		saveExt = ".jpg"
+	} else if ext == ".pdf" {
+		processedBytes, err = compressPDF(file)
+		if err != nil {
+			errorJSON(w, http.StatusInternalServerError, "failed to compress PDF: "+err.Error())
+			return
+		}
+	} else {
+		processedBytes, err = io.ReadAll(file)
+		if err != nil {
+			errorJSON(w, http.StatusInternalServerError, "failed to read file")
+			return
+		}
+	}
+
+	filename := randomHex(16) + saveExt
+
+	if a.r2Client != nil {
+		key := "uploads/" + filename
+		_, err = a.r2Client.PutObject(r.Context(), &s3.PutObjectInput{
+			Bucket:      aws.String(a.r2BucketName),
+			Key:         aws.String(key),
+			Body:        bytes.NewReader(processedBytes),
+			ContentType: aws.String(http.DetectContentType(processedBytes)),
+		})
+		if err != nil {
+			errorJSON(w, http.StatusInternalServerError, "failed to upload file to Cloudflare R2: "+err.Error())
+			return
+		}
+
+		publicDomain := a.r2PublicDomain
+		if !strings.HasPrefix(publicDomain, "http://") && !strings.HasPrefix(publicDomain, "https://") {
+			publicDomain = "https://" + publicDomain
+		}
+		publicDomain = strings.TrimSuffix(publicDomain, "/")
+		url := fmt.Sprintf("%s/%s", publicDomain, key)
+		writeJSON(w, http.StatusOK, map[string]string{"url": url})
+	} else {
+		filePath := filepath.Join("uploads", filename)
+		err = os.WriteFile(filePath, processedBytes, 0644)
+		if err != nil {
+			errorJSON(w, http.StatusInternalServerError, "could not save file locally")
+			return
+		}
+		url := "/uploads/" + filename
+		writeJSON(w, http.StatusOK, map[string]string{"url": url})
+	}
+}
+
+func (a *app) presignUpload(w http.ResponseWriter, r *http.Request) {
+	if a.r2PresignClient == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"fallback": true})
 		return
 	}
-	defer out.Close()
 
-	_, err = io.Copy(out, file)
-	if err != nil {
-		errorJSON(w, http.StatusInternalServerError, "failed to write file")
+	var req struct {
+		Filename    string `json:"filename"`
+		ContentType string `json:"contentType"`
+	}
+	if !decode(w, r, &req) {
 		return
 	}
 
-	url := "/uploads/" + filename
-	writeJSON(w, http.StatusOK, map[string]string{"url": url})
+	ext := strings.ToLower(filepath.Ext(req.Filename))
+	allowed := map[string]bool{".jpg": true, ".jpeg": true, ".png": true, ".gif": true, ".svg": true}
+	if !allowed[ext] {
+		errorJSON(w, http.StatusBadRequest, "invalid file type: only images are allowed for client upload")
+		return
+	}
+
+	uniqueName := randomHex(16) + ext
+	key := "uploads/" + uniqueName
+
+	presignedReq, err := a.r2PresignClient.PresignPutObject(r.Context(), &s3.PutObjectInput{
+		Bucket:      aws.String(a.r2BucketName),
+		Key:         aws.String(key),
+		ContentType: aws.String(req.ContentType),
+	}, func(opts *s3.PresignOptions) {
+		opts.Expires = 15 * time.Minute
+	})
+	if err != nil {
+		errorJSON(w, http.StatusInternalServerError, "failed to generate upload URL: "+err.Error())
+		return
+	}
+
+	publicDomain := a.r2PublicDomain
+	if !strings.HasPrefix(publicDomain, "http://") && !strings.HasPrefix(publicDomain, "https://") {
+		publicDomain = "https://" + publicDomain
+	}
+	publicDomain = strings.TrimSuffix(publicDomain, "/")
+	publicURL := fmt.Sprintf("%s/%s", publicDomain, key)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"fallback":  false,
+		"uploadUrl": presignedReq.URL,
+		"publicUrl": publicURL,
+	})
 }
 
 func (a *app) updateSellerMe(w http.ResponseWriter, r *http.Request) {
@@ -1376,6 +1593,16 @@ func (a *app) getAddresses(w http.ResponseWriter, r *http.Request) {
 			errorJSON(w, 500, "failed to read address")
 			return
 		}
+		addr.RecipientName, _ = a.decrypt(addr.RecipientName)
+		addr.Phone, _ = a.decrypt(addr.Phone)
+		addr.AddressLine1, _ = a.decrypt(addr.AddressLine1)
+		if addr.AddressLine2 != nil {
+			dec2, _ := a.decrypt(*addr.AddressLine2)
+			addr.AddressLine2 = &dec2
+		}
+		addr.City, _ = a.decrypt(addr.City)
+		addr.State, _ = a.decrypt(addr.State)
+		addr.PostalCode, _ = a.decrypt(addr.PostalCode)
 		out = append(out, addr)
 	}
 	writeJSON(w, 200, out)
@@ -1405,6 +1632,16 @@ func (a *app) createAddress(w http.ResponseWriter, r *http.Request) {
 		errorJSON(w, http.StatusBadRequest, "addressName, recipientName, phone, addressLine1, city, state and postalCode are required")
 		return
 	}
+	phoneRegex := regexp.MustCompile(`^\d{10}$`)
+	if !phoneRegex.MatchString(req.Phone) {
+		errorJSON(w, http.StatusBadRequest, "recipient phone number must be exactly 10 digits")
+		return
+	}
+	pincodeRegex := regexp.MustCompile(`^\d{5,6}$`)
+	if !pincodeRegex.MatchString(req.PostalCode) {
+		errorJSON(w, http.StatusBadRequest, "postal code must be 5 or 6 digits")
+		return
+	}
 
 	tx, err := a.db.Begin(r.Context())
 	if err != nil {
@@ -1427,21 +1664,45 @@ func (a *app) createAddress(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	encRecipientName, _ := a.encrypt(req.RecipientName)
+	encPhone, _ := a.encrypt(req.Phone)
+	encAddressLine1, _ := a.encrypt(req.AddressLine1)
+	var encAddressLine2 *string
+	if req.AddressLine2 != nil {
+		str, _ := a.encrypt(*req.AddressLine2)
+		encAddressLine2 = &str
+	}
+	encCity, _ := a.encrypt(req.City)
+	encState, _ := a.encrypt(req.State)
+	encPostalCode, _ := a.encrypt(req.PostalCode)
+
 	var addr address
+	var dbRecipientName, dbPhone, dbAddressLine1, dbCity, dbState, dbPostalCode string
+	var dbAddressLine2 *string
 	err = tx.QueryRow(r.Context(), `
 		INSERT INTO addresses(user_id, address_name, recipient_name, phone, address_line1, address_line2, city, state, postal_code, country, latitude, longitude, is_default)
 		VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 		RETURNING id, user_id, address_name, recipient_name, phone, address_line1, address_line2, city, state, postal_code, country, latitude, longitude, is_default`,
-		auth.UserID, req.AddressName, req.RecipientName, req.Phone, req.AddressLine1, req.AddressLine2, req.City, req.State, req.PostalCode, req.Country, req.Latitude, req.Longitude, req.IsDefault,
+		auth.UserID, req.AddressName, encRecipientName, encPhone, encAddressLine1, encAddressLine2, encCity, encState, encPostalCode, req.Country, req.Latitude, req.Longitude, req.IsDefault,
 	).Scan(
-		&addr.ID, &addr.UserID, &addr.AddressName, &addr.RecipientName, &addr.Phone,
-		&addr.AddressLine1, &addr.AddressLine2, &addr.City, &addr.State, &addr.PostalCode,
+		&addr.ID, &addr.UserID, &addr.AddressName, &dbRecipientName, &dbPhone,
+		&dbAddressLine1, &dbAddressLine2, &dbCity, &dbState, &dbPostalCode,
 		&addr.Country, &addr.Latitude, &addr.Longitude, &addr.IsDefault,
 	)
 	if err != nil {
 		errorJSON(w, 500, "could not create address record")
 		return
 	}
+	addr.RecipientName, _ = a.decrypt(dbRecipientName)
+	addr.Phone, _ = a.decrypt(dbPhone)
+	addr.AddressLine1, _ = a.decrypt(dbAddressLine1)
+	if dbAddressLine2 != nil {
+		dec2, _ := a.decrypt(*dbAddressLine2)
+		addr.AddressLine2 = &dec2
+	}
+	addr.City, _ = a.decrypt(dbCity)
+	addr.State, _ = a.decrypt(dbState)
+	addr.PostalCode, _ = a.decrypt(dbPostalCode)
 
 	if err := tx.Commit(r.Context()); err != nil {
 		errorJSON(w, 500, "failed to save address")
@@ -1519,8 +1780,9 @@ func (a *app) updateProfile(w http.ResponseWriter, r *http.Request) {
 		argIdx++
 	}
 	if req.Phone != nil {
+		encPhone, _ := a.encrypt(*req.Phone)
 		query += fmt.Sprintf(", phone = $%d", argIdx)
-		args = append(args, *req.Phone)
+		args = append(args, encPhone)
 		argIdx++
 	}
 	if req.AvatarURL != nil {
@@ -1538,10 +1800,15 @@ func (a *app) updateProfile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var u user
-	err = tx.QueryRow(r.Context(), "SELECT id, name, email, role, phone, avatar_url FROM users WHERE id = $1", auth.UserID).Scan(&u.ID, &u.Name, &u.Email, &u.Role, &u.Phone, &u.AvatarURL)
+	var dbPhone *string
+	err = tx.QueryRow(r.Context(), "SELECT id, name, email, role, phone, avatar_url FROM users WHERE id = $1", auth.UserID).Scan(&u.ID, &u.Name, &u.Email, &u.Role, &dbPhone, &u.AvatarURL)
 	if err != nil {
 		errorJSON(w, 500, "could not reload user info")
 		return
+	}
+	if dbPhone != nil {
+		decPhone, _ := a.decrypt(*dbPhone)
+		u.Phone = &decPhone
 	}
 
 	if err := tx.Commit(r.Context()); err != nil {
@@ -1550,4 +1817,174 @@ func (a *app) updateProfile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, 200, u)
+}
+
+func (a *app) encrypt(plaintext string) (string, error) {
+	if plaintext == "" {
+		return "", nil
+	}
+	block, err := aes.NewCipher(a.encryptionKey)
+	if err != nil {
+		return "", err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return "", err
+	}
+	ciphertext := gcm.Seal(nonce, nonce, []byte(plaintext), nil)
+	return hex.EncodeToString(ciphertext), nil
+}
+
+func (a *app) decrypt(ciphertextHex string) (string, error) {
+	if ciphertextHex == "" {
+		return "", nil
+	}
+	ciphertext, err := hex.DecodeString(ciphertextHex)
+	if err != nil {
+		return ciphertextHex, nil
+	}
+	block, err := aes.NewCipher(a.encryptionKey)
+	if err != nil {
+		return "", err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+	nonceSize := gcm.NonceSize()
+	if len(ciphertext) < nonceSize {
+		return ciphertextHex, nil
+	}
+	nonce, actualCiphertext := ciphertext[:nonceSize], ciphertext[nonceSize:]
+	plaintext, err := gcm.Open(nil, nonce, actualCiphertext, nil)
+	if err != nil {
+		return ciphertextHex, nil
+	}
+	return string(plaintext), nil
+}
+
+func compressImage(src io.Reader) ([]byte, error) {
+	img, _, err := image.Decode(src)
+	if err != nil {
+		return nil, err
+	}
+
+	bounds := img.Bounds()
+	width := bounds.Dx()
+	height := bounds.Dy()
+	maxDim := 1200
+	if width > maxDim || height > maxDim {
+		var newW, newH int
+		if width > height {
+			newW = maxDim
+			newH = (height * maxDim) / width
+		} else {
+			newH = maxDim
+			newW = (width * maxDim) / height
+		}
+
+		scaledImg := image.NewRGBA(image.Rect(0, 0, newW, newH))
+		draw.ApproxBiLinear.Scale(scaledImg, scaledImg.Bounds(), img, img.Bounds(), draw.Over, nil)
+		img = scaledImg
+	}
+
+	lowQ := 5
+	highQ := 95
+	var finalBytes []byte
+
+	for i := 0; i < 7; i++ {
+		midQ := (lowQ + highQ) / 2
+		buf := new(bytes.Buffer)
+		err = jpeg.Encode(buf, img, &jpeg.Options{Quality: midQ})
+		if err != nil {
+			return nil, err
+		}
+
+		size := buf.Len()
+		finalBytes = buf.Bytes()
+
+		if size >= 50*1024 && size <= 100*1024 {
+			break
+		} else if size < 50*1024 {
+			lowQ = midQ + 1
+		} else {
+			highQ = midQ - 1
+		}
+	}
+
+	if len(finalBytes) > 100*1024 {
+		buf := new(bytes.Buffer)
+		_ = jpeg.Encode(buf, img, &jpeg.Options{Quality: 5})
+		finalBytes = buf.Bytes()
+	} else if len(finalBytes) < 50*1024 {
+		buf := new(bytes.Buffer)
+		_ = jpeg.Encode(buf, img, &jpeg.Options{Quality: 90})
+		finalBytes = buf.Bytes()
+	}
+
+	return finalBytes, nil
+}
+
+func compressPDF(src io.Reader) ([]byte, error) {
+	tempIn, err := os.CreateTemp("", "pdfcpu-in-*.pdf")
+	if err != nil {
+		return nil, err
+	}
+	defer os.Remove(tempIn.Name())
+	defer tempIn.Close()
+
+	if _, err := io.Copy(tempIn, src); err != nil {
+		return nil, err
+	}
+	tempIn.Close()
+
+	tempOutName := tempIn.Name() + "-opt.pdf"
+	defer os.Remove(tempOutName)
+
+	err = api.OptimizeFile(tempIn.Name(), tempOutName, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	optimizedBytes, err := os.ReadFile(tempOutName)
+	if err != nil {
+		return nil, err
+	}
+
+	return optimizedBytes, nil
+}
+
+type gzipResponseWriter struct {
+	io.Writer
+	http.ResponseWriter
+}
+
+func (w gzipResponseWriter) Write(b []byte) (int, error) {
+	return w.Writer.Write(b)
+}
+
+func (a *app) gzipMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		if strings.HasPrefix(r.URL.Path, "/uploads/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Del("Content-Length")
+		gz := gzip.NewWriter(w)
+		defer gz.Close()
+
+		gzw := gzipResponseWriter{Writer: gz, ResponseWriter: w}
+		next.ServeHTTP(gzw, r)
+	})
 }

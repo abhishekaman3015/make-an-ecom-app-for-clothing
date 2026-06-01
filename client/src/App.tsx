@@ -42,6 +42,9 @@ export function App() {
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [authOpen, setAuthOpen] = useState(false);
   const [authMode, setAuthMode] = useState<"login" | "signup">("login");
+  const [showSplash, setShowSplash] = useState(true);
+  const [splashFade, setSplashFade] = useState(false);
+  const [loading, setLoading] = useState(false);
 
   const subdomain = useMemo(() => {
     const host = window.location.hostname;
@@ -82,12 +85,22 @@ export function App() {
     }
   }, [subdomain, session?.user.role]);
 
+  useEffect(() => {
+    const fadeTimer = setTimeout(() => setSplashFade(true), 2000);
+    const hideTimer = setTimeout(() => setShowSplash(false), 2600);
+    return () => {
+      clearTimeout(fadeTimer);
+      clearTimeout(hideTimer);
+    };
+  }, []);
+
   const role = session?.user.role;
   const isBuyer = role === "BUYER" || !session;
   const isSeller = role === "SELLER";
   const isAdmin = role === "ADMIN";
 
   async function refresh() {
+    setLoading(true);
     try {
       const catalog = await api.products();
       setProducts(Array.isArray(catalog) ? catalog : []);
@@ -130,6 +143,8 @@ export function App() {
       }
     } catch (error: any) {
       setNotice(error.message || "Failed to fetch data.");
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -234,6 +249,15 @@ export function App() {
 
   return (
     <main style={{ minHeight: "100vh", backgroundColor: "#f5f5f6", display: "flex", flexDirection: "column" }}>
+      {showSplash && (
+        <div className={`splash-container ${splashFade ? "fade-out" : ""}`}>
+          <div className="splash-logo-wrapper">
+            <img src="/assets/maithilcart-logo.jpg" alt="Maithil Cart Logo" className="splash-logo-img" />
+          </div>
+          <h1 className="splash-title">Maithil Cart</h1>
+          <span className="splash-subtitle">Premium Fashion Hub</span>
+        </div>
+      )}
       <Header
         session={session}
         view={view}
@@ -397,7 +421,20 @@ export function App() {
                   <span>{filteredProducts.length} items found</span>
                 </div>
 
-                {filteredProducts.length === 0 ? (
+                {loading ? (
+                  <div className="product-grid">
+                    {Array.from({ length: 8 }).map((_, idx) => (
+                      <div className="shimmer-card" key={idx}>
+                        <div className="shimmer-img shimmer-element"></div>
+                        <div className="shimmer-info">
+                          <div className="shimmer-line brand shimmer-element"></div>
+                          <div className="shimmer-line title shimmer-element"></div>
+                          <div className="shimmer-line price shimmer-element"></div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : filteredProducts.length === 0 ? (
                   <div style={{ textAlign: "center", padding: "60px 20px" }}>
                     <Info size={48} style={{ color: "var(--text-muted)", marginBottom: "12px" }} />
                     <p style={{ fontWeight: 600 }}>No products match your active search filters.</p>

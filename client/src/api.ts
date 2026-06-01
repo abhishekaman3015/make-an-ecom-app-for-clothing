@@ -1,4 +1,5 @@
 import type { Address, CartItem, Order, Payout, Product, Seller, User } from "./types";
+import { compressImageClient } from "./uploadHelper";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "";
 
@@ -90,18 +91,60 @@ export const api = {
     request<void>(`/api/user/addresses/${id}`, { method: "DELETE" }, token),
   updateProfile: (token: string, payload: { name?: string; phone?: string; avatarUrl?: string }) =>
     request<User>("/api/user/profile", { method: "PATCH", body: JSON.stringify(payload) }, token),
-  upload: (file: File) => {
+  upload: async (file: File, token?: string): Promise<{ url: string }> => {
+    const ext = file.name.substring(file.name.lastIndexOf(".")).toLowerCase();
+    const isImage = [".jpg", ".jpeg", ".png", ".gif", ".svg"].includes(ext);
+
+    let fileToUpload: Blob | File = file;
+
+    if (isImage && ext !== ".svg") {
+      fileToUpload = await compressImageClient(file);
+    }
+
+    if (isImage && token) {
+      try {
+        const presignRes = await request<{ fallback: boolean; uploadUrl?: string; publicUrl?: string }>(
+          "/api/upload/presign",
+          {
+            method: "POST",
+            body: JSON.stringify({ filename: file.name, contentType: fileToUpload.type || file.type })
+          },
+          token
+        );
+
+        if (presignRes && !presignRes.fallback && presignRes.uploadUrl && presignRes.publicUrl) {
+          const uploadRes = await fetch(presignRes.uploadUrl, {
+            method: "PUT",
+            headers: {
+              "Content-Type": fileToUpload.type || file.type
+            },
+            body: fileToUpload
+          });
+
+          if (!uploadRes.ok) {
+            throw new Error(`R2 upload failed: ${uploadRes.statusText}`);
+          }
+
+          return { url: presignRes.publicUrl };
+        }
+      } catch (err) {
+        console.warn("Direct R2 upload failed, falling back to backend upload", err);
+      }
+    }
+
     const formData = new FormData();
-    formData.append("file", file);
-    return fetch((import.meta.env.VITE_API_BASE_URL || "") + "/api/upload", {
+    formData.append("file", fileToUpload, file.name);
+
+    const res = await fetch((import.meta.env.VITE_API_BASE_URL || "") + "/api/upload", {
       method: "POST",
       body: formData,
-    }).then(async (res) => {
-      if (!res.ok) {
-        const error = await res.json().catch(() => ({ message: res.statusText }));
-        throw new Error(error.message || "Upload failed");
-      }
-      return res.json() as Promise<{ url: string }>;
     });
+
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({ message: res.statusText }));
+      throw new Error(error.message || "Upload failed");
+    }
+
+    return res.json() as Promise<{ url: string }>;
   }
 };

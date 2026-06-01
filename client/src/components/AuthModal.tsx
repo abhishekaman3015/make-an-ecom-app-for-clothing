@@ -30,6 +30,29 @@ export function AuthModal({ onClose, onAuth, initialMode = "login" }: AuthModalP
     const email = String(form.get("email"));
     const password = String(form.get("password"));
 
+    if (mode === "signup") {
+      const name = String(form.get("name"));
+      if (!name.trim()) {
+        setErrorMsg("Name cannot be empty.");
+        setLoading(false);
+        return;
+      }
+      const phone = String(form.get("phone") || "");
+      if (phone && !/^\d{10}$/.test(phone)) {
+        setErrorMsg("Phone number must be exactly 10 digits.");
+        setLoading(false);
+        return;
+      }
+      if (role === "SELLER") {
+        const gstin = String(form.get("gstin") || "");
+        if (gstin && !/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/.test(gstin.toUpperCase())) {
+          setErrorMsg("Please enter a valid 15-digit GSTIN (e.g. 29ABCDE1234F1Z5).");
+          setLoading(false);
+          return;
+        }
+      }
+    }
+
     try {
       const payload = mode === "login"
         ? await api.login(email, password)

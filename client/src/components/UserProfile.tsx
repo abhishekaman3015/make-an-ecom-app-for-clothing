@@ -176,6 +176,13 @@ export function UserProfile({ token, user, onUpdateSession }: UserProfileProps) 
     setUpdatingProfile(true);
     setProfileMessage("");
     setProfileError("");
+
+    if (phone && !/^\d{10}$/.test(phone)) {
+      setProfileError("Phone number must be exactly 10 digits.");
+      setUpdatingProfile(false);
+      return;
+    }
+
     try {
       const updatedUser = await api.updateProfile(token, {
         phone: phone || undefined,
@@ -198,7 +205,7 @@ export function UserProfile({ token, user, onUpdateSession }: UserProfileProps) 
     try {
       setUpdatingProfile(true);
       setProfileError("");
-      const result = await api.upload(file);
+      const result = await api.upload(file, token);
       setAvatarUrl(result.url);
       
       // Auto save after upload
@@ -221,6 +228,22 @@ export function UserProfile({ token, user, onUpdateSession }: UserProfileProps) 
     setAddingAddress(true);
     setAddressSuccess("");
     setAddressError("");
+
+    if (!recipientName.trim()) {
+      setAddressError("Recipient Name cannot be empty.");
+      setAddingAddress(false);
+      return;
+    }
+    if (!addressPhone.trim() || !/^\d{10}$/.test(addressPhone)) {
+      setAddressError("Recipient Phone number must be exactly 10 digits.");
+      setAddingAddress(false);
+      return;
+    }
+    if (!postalCode.trim() || !/^\d{5,6}$/.test(postalCode)) {
+      setAddressError("Postal Code must be 5 or 6 digits.");
+      setAddingAddress(false);
+      return;
+    }
 
     try {
       await api.createAddress(token, {

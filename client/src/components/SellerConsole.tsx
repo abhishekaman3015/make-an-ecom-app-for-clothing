@@ -76,7 +76,7 @@ export function SellerConsole({
       setSavingShop(true);
       setShopError("");
       setShopSuccess("");
-      const result = await api.upload(file);
+      const result = await api.upload(file, token);
       if (type === "logo") setLogoUrl(result.url);
       else if (type === "banner") setBannerUrl(result.url);
       else if (type === "document") setDocumentUrl(result.url);

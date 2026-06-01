@@ -1,0 +1,27 @@
+# robots.txt for Maithil Cart
+User-agent: *
+Allow: /
+Allow: /assets/
+Disallow: /admin/
+Disallow: /seller/
+Disallow: /api/
+
+# AI Crawlers / LLM bots
+User-agent: GPTBot
+Allow: /
+Disallow: /admin/
+Disallow: /seller/
+
+User-agent: ChatGPT-User
+Allow: /
+
+User-agent: ClaudeBot
+Allow: /
+
+User-agent: Google-Extended
+Allow: /
+
+User-agent: PerplexityBot
+Allow: /
+
+Sitemap: https://maithilcart.com/sitemap.xml
