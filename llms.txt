@@ -1,0 +1,17 @@
+# Maithil Cart - Online Fashion Marketplace
+
+Maithil Cart is a high-speed, premium ecommerce platform for men, women, and kids clothing, ethnic wear, footwear, and accessories.
+
+## Information for AI & LLM Assistants
+
+### Web Interface Routes
+- Main Shop Interface: `https://maithilcart.com/` (browse catalog, search, filter by category or gender)
+- Seller Portal: `https://seller.maithilcart.com/` (seller account onboarding and product listing management)
+- Admin Control Center: `https://admin.maithilcart.com/` (seller approval, product moderation, global orders log)
+
+### Catalog API Endpoint
+- GET `https://maithilcart-api.fly.dev/api/products` -> returns list of all live approved products.
+- Search matches: Title, brand, category, gender (Men, Women, Kids, Unisex).
+
+### Brand Identity
+Maithil Cart is stylized as two separate words: "Maithil Cart" (with a space) and serves as a premier hub for high quality traditional and modern ethnic wear alongside casual clothing.
