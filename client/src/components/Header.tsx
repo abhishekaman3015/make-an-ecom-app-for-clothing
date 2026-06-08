@@ -1,14 +1,15 @@
 import React, { useState, useRef, useEffect } from "react";
-import { Search, ShoppingBag, User as UserIcon, LogOut, ShieldCheck, Store, Truck, Home } from "lucide-react";
-import type { User, CartItem } from "../types";
+import { Search, ShoppingBag, User as UserIcon, LogOut, ShieldCheck, Store, Truck, Home, Heart } from "lucide-react";
+import type { User, CartItem, Product } from "../types";
 
-type View = "shop" | "orders" | "seller" | "admin" | "bag" | "profile";
+type View = "shop" | "orders" | "seller" | "admin" | "bag" | "profile" | "wishlist";
 
 interface HeaderProps {
   session: { token: string; user: User } | null;
   view: View;
   setView: (view: View) => void;
   cart: CartItem[];
+  wishlist: Product[];
   query: string;
   setQuery: (query: string) => void;
   onLogout: () => void;
@@ -21,6 +22,7 @@ export function Header({
   view,
   setView,
   cart,
+  wishlist,
   query,
   setQuery,
   onLogout,
@@ -180,6 +182,15 @@ export function Header({
             )}
           </div>
 
+          {/* Wishlist Icon */}
+          {(role === "BUYER" || !session) && (
+            <button className="action-btn" onClick={() => setView("wishlist")}>
+              <Heart size={20} className={view === "wishlist" ? "text-primary" : ""} style={{ fill: view === "wishlist" ? "var(--primary)" : "none", color: view === "wishlist" ? "var(--primary)" : "inherit" }} />
+              {wishlist.length > 0 && <span className="badge">{wishlist.length}</span>}
+              <span>Wishlist</span>
+            </button>
+          )}
+
           {/* Bag Icon */}
           {(role === "BUYER" || !session) && (
             <button className="action-btn" onClick={() => setView("bag")}>
@@ -197,6 +208,16 @@ export function Header({
           <Home size={22} />
           <span>Home</span>
         </button>
+
+        {(role === "BUYER" || !session) && (
+          <button className={`mobile-nav-item ${view === "wishlist" ? "active" : ""}`} onClick={() => setView("wishlist")}>
+            <div style={{ position: "relative" }}>
+              <Heart size={22} style={{ fill: view === "wishlist" ? "var(--primary)" : "none", color: view === "wishlist" ? "var(--primary)" : "inherit" }} />
+              {wishlist.length > 0 && <span className="badge" style={{ top: "-8px", right: "-8px" }}>{wishlist.length}</span>}
+            </div>
+            <span>Wishlist</span>
+          </button>
+        )}
         
         {(role === "BUYER" || !session) && (
           <button className={`mobile-nav-item ${view === "bag" ? "active" : ""}`} onClick={() => setView("bag")}>

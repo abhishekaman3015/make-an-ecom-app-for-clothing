@@ -68,6 +68,11 @@ export const api = {
   updateCart: (token: string, id: string, quantity: number) =>
     request<{ ok: boolean }>(`/api/cart/${id}`, { method: "PATCH", body: JSON.stringify({ quantity }) }, token),
   removeCart: (token: string, id: string) => request<void>(`/api/cart/${id}`, { method: "DELETE" }, token),
+  wishlist: (token: string) => requestArray<Product>("/api/wishlist", {}, token),
+  addWishlist: (token: string, productId: string) =>
+    request<{ ok: boolean }>("/api/wishlist", { method: "POST", body: JSON.stringify({ productId }) }, token),
+  removeWishlist: (token: string, productId: string) =>
+    request<void>(`/api/wishlist/${productId}`, { method: "DELETE" }, token),
   checkout: (token: string, payload: { shippingName: string; shippingPhone: string; shippingAddress: string; paymentMethod: string }) =>
     request<{ id: string; paymentReference: string; totalCents: number; status: string }>("/api/checkout", { method: "POST", body: JSON.stringify(payload) }, token),
   orders: (token: string) => requestArray<Order>("/api/orders", {}, token),

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Check, ShoppingBag, Truck, Info, Filter, ArrowUp } from "lucide-react";
+import { Check, ShoppingBag, Truck, Info, Filter, ArrowUp, Heart } from "lucide-react";
 import { api, AuthPayload } from "./api";
 import type { CartItem, Order, Payout, Product, Seller, User, Variant } from "./types";
 
@@ -18,13 +18,14 @@ const money = (cents: number) => rupee.format(cents / 100);
 
 const stored = localStorage.getItem("maithilcart-session");
 type Session = { token: string; user: User };
-type View = "shop" | "orders" | "seller" | "admin" | "bag" | "profile";
+type View = "shop" | "orders" | "seller" | "admin" | "bag" | "profile" | "wishlist";
 
 export function App() {
   const [session, setSession] = useState<Session | null>(stored ? JSON.parse(stored) : null);
   const [view, setView] = useState<View>("shop");
   const [products, setProducts] = useState<Product[]>([]);
   const [cart, setCart] = useState<CartItem[]>([]);
+  const [wishlist, setWishlist] = useState<Product[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [seller, setSeller] = useState<Seller | null>(null);
   const [sellerProducts, setSellerProducts] = useState<Product[]>([]);
@@ -45,6 +46,7 @@ export function App() {
   const [showSplash, setShowSplash] = useState(true);
   const [splashFade, setSplashFade] = useState(false);
   const [loading, setLoading] = useState(false);
+  const safeProducts = Array.isArray(products) ? products : [];
 
   const subdomain = useMemo(() => {
     const host = window.location.hostname;
@@ -108,16 +110,20 @@ export function App() {
       if (!session) {
         setCart([]);
         setOrders([]);
+        const saved = localStorage.getItem("maithilcart-wishlist");
+        setWishlist(saved ? JSON.parse(saved) : []);
         return;
       }
       
       if (role === "BUYER") {
-        const [cartRows, orderRows] = await Promise.all([
+        const [cartRows, orderRows, wishlistRows] = await Promise.all([
           api.cart(session.token), 
-          api.orders(session.token)
+          api.orders(session.token),
+          api.wishlist(session.token)
         ]);
         setCart(Array.isArray(cartRows) ? cartRows : []);
         setOrders(Array.isArray(orderRows) ? orderRows : []);
+        setWishlist(Array.isArray(wishlistRows) ? wishlistRows : []);
       }
       
       if (role === "SELLER") {
@@ -152,11 +158,69 @@ export function App() {
     refresh();
   }, [session?.token]);
 
-  function saveSession(payload: AuthPayload | null) {
+  // Handle URL query parameter ?product=productId to auto-open product modal
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const prodId = params.get("product");
+    if (prodId && safeProducts.length > 0) {
+      const found = safeProducts.find((p) => p.id === prodId);
+      if (found) {
+        setSelectedProduct(found);
+      }
+    }
+  }, [safeProducts]);
+
+  const toggleWishlist = async (product: Product) => {
+    const isWish = wishlist.some((item) => item.id === product.id);
+    if (session) {
+      try {
+        if (isWish) {
+          await api.removeWishlist(session.token, product.id);
+          setWishlist((prev) => prev.filter((item) => item.id !== product.id));
+          setNotice(`Removed "${product.title}" from Wishlist`);
+        } else {
+          await api.addWishlist(session.token, product.id);
+          setWishlist((prev) => [...prev, product]);
+          setNotice(`Added "${product.title}" to Wishlist`);
+        }
+      } catch (err: any) {
+        setNotice(err.message || "Failed to update wishlist.");
+      }
+    } else {
+      let updated: Product[];
+      if (isWish) {
+        updated = wishlist.filter((item) => item.id !== product.id);
+        setNotice(`Removed "${product.title}" from Wishlist`);
+      } else {
+        updated = [...wishlist, product];
+        setNotice(`Added "${product.title}" to Wishlist`);
+      }
+      setWishlist(updated);
+      localStorage.setItem("maithilcart-wishlist", JSON.stringify(updated));
+    }
+  };
+
+  async function saveSession(payload: AuthPayload | null) {
     setSession(payload);
     if (payload) {
       localStorage.setItem("maithilcart-session", JSON.stringify(payload));
       setNotice(`Welcome back, ${payload.user.name}!`);
+
+      // Merge guest local wishlist into database on login
+      if (payload.user.role === "BUYER") {
+        const local = localStorage.getItem("maithilcart-wishlist");
+        if (local) {
+          try {
+            const localItems: Product[] = JSON.parse(local);
+            for (const item of localItems) {
+              await api.addWishlist(payload.token, item.id).catch(() => {});
+            }
+            localStorage.removeItem("maithilcart-wishlist");
+          } catch (e) {
+            console.error("Failed to merge wishlist:", e);
+          }
+        }
+      }
     } else {
       localStorage.removeItem("maithilcart-session");
       setNotice("Logged out successfully.");
@@ -182,8 +246,6 @@ export function App() {
     saveSession(payload);
     setView(kind === "seller" ? "seller" : kind === "admin" ? "admin" : "shop");
   };
-
-  const safeProducts = Array.isArray(products) ? products : [];
   const categories = useMemo(() => {
     return ["All", ...Array.from(new Set(safeProducts.map((item) => item.category).filter(Boolean)))];
   }, [safeProducts]);
@@ -263,6 +325,7 @@ export function App() {
         view={view}
         setView={setView}
         cart={cart}
+        wishlist={wishlist}
         query={query}
         setQuery={setQuery}
         onLogout={() => saveSession(null)}
@@ -295,6 +358,8 @@ export function App() {
             addToBag(variant);
             setSelectedProduct(null);
           }}
+          isWishlisted={wishlist.some((item) => item.id === selectedProduct.id)}
+          onToggleWishlist={() => toggleWishlist(selectedProduct)}
         />
       )}
 
@@ -445,12 +510,37 @@ export function App() {
                       const discount = p.mrpCents > p.salePriceCents
                         ? Math.round(((p.mrpCents - p.salePriceCents) / p.mrpCents) * 100)
                         : 0;
+                      const isWish = wishlist.some((item) => item.id === p.id);
                       return (
                         <article 
                           className="product-card" 
                           key={p.id}
                           onClick={() => setSelectedProduct(p)}
+                          style={{ position: "relative" }}
                         >
+                          {/* Wishlist Heart on Card */}
+                          <button
+                            onClick={(e) => { e.stopPropagation(); toggleWishlist(p); }}
+                            style={{
+                              position: "absolute",
+                              top: "12px",
+                              right: "12px",
+                              zIndex: 10,
+                              background: "rgba(255, 255, 255, 0.9)",
+                              border: "1px solid var(--border-color)",
+                              borderRadius: "50%",
+                              width: "36px",
+                              height: "36px",
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              boxShadow: "var(--shadow-sm)",
+                              color: isWish ? "var(--primary)" : "var(--text-dark)",
+                              transition: "all var(--transition-fast)"
+                            }}
+                          >
+                            <Heart size={18} style={{ fill: isWish ? "var(--primary)" : "none", color: isWish ? "var(--primary)" : "inherit" }} />
+                          </button>
                           <div className="product-image-container">
                             <img src={p.imageUrl} alt={p.title} />
                             <span className="category-tag">{p.category}</span>
@@ -521,6 +611,96 @@ export function App() {
             user={session.user}
             onUpdateSession={updateSessionUser}
           />
+        )}
+
+        {view === "wishlist" && (
+          <section className="orders-page" style={{ padding: "30px 4% 80px" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid var(--border-color)", paddingBottom: "16px", marginBottom: "24px" }}>
+              <h1 style={{ fontFamily: "var(--font-title)", fontSize: "22px", fontWeight: 800 }}>My Wishlist</h1>
+              <span style={{ fontSize: "14px", color: "var(--text-muted)", fontWeight: 600 }}>{wishlist.length} items</span>
+            </div>
+            {wishlist.length === 0 ? (
+              <div style={{ textAlign: "center", padding: "80px 20px", background: "white", border: "1px solid var(--border-color)", borderRadius: "var(--border-radius-sm)" }}>
+                <div style={{ fontSize: "48px", marginBottom: "16px" }}>❤️</div>
+                <h3 style={{ fontSize: "18px", fontWeight: 700, marginBottom: "8px", color: "var(--text-dark)" }}>Your wishlist is empty!</h3>
+                <p style={{ color: "var(--text-muted)", fontSize: "14px", marginBottom: "24px" }}>Explore our designs and add your favorites to your wishlist.</p>
+                <button 
+                  onClick={() => setView("shop")}
+                  style={{
+                    background: "var(--primary)",
+                    color: "white",
+                    padding: "12px 28px",
+                    fontFamily: "var(--font-title)",
+                    fontWeight: 700,
+                    fontSize: "14px",
+                    borderRadius: "var(--border-radius-sm)",
+                    textTransform: "uppercase"
+                  }}
+                >
+                  Shop Now
+                </button>
+              </div>
+            ) : (
+              <div className="product-grid">
+                {wishlist.map((p) => {
+                  const discount = p.mrpCents > p.salePriceCents
+                    ? Math.round(((p.mrpCents - p.salePriceCents) / p.mrpCents) * 100)
+                    : 0;
+                  return (
+                    <article 
+                      className="product-card" 
+                      key={p.id}
+                      onClick={() => setSelectedProduct(p)}
+                      style={{ position: "relative" }}
+                    >
+                      {/* Heart Toggle on Card */}
+                      <button
+                        onClick={(e) => { e.stopPropagation(); toggleWishlist(p); }}
+                        style={{
+                          position: "absolute",
+                          top: "12px",
+                          right: "12px",
+                          zIndex: 10,
+                          background: "white",
+                          border: "1px solid var(--border-color)",
+                          borderRadius: "50%",
+                          width: "36px",
+                          height: "36px",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          boxShadow: "var(--shadow-sm)",
+                          color: "var(--primary)"
+                        }}
+                      >
+                        <Heart size={18} style={{ fill: "var(--primary)" }} />
+                      </button>
+                      <div className="product-image-container">
+                        <img src={p.imageUrl} alt={p.title} />
+                        <span className="category-tag">{p.category}</span>
+                      </div>
+                      <div className="product-info">
+                        <h4 className="product-brand">{p.brand}</h4>
+                        <p className="product-title-text">{p.title}</p>
+                        <div className="product-price-row">
+                          <span className="sale-price">{money(p.salePriceCents)}</span>
+                          {p.mrpCents > p.salePriceCents && (
+                            <>
+                              <span className="mrp-price">{money(p.mrpCents)}</span>
+                              <span className="discount-percentage">({discount}% OFF)</span>
+                            </>
+                          )}
+                        </div>
+                        <p style={{ fontSize: "10px", color: "var(--text-muted)", marginTop: "2px" }}>
+                          Seller: {p.storeName}
+                        </p>
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            )}
+          </section>
         )}
       </div>
 

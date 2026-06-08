@@ -224,6 +224,11 @@ func main() {
 	mux.HandleFunc("DELETE /api/cart/{id}", a.withAuth("BUYER", a.deleteCart))
 	mux.HandleFunc("POST /api/checkout", a.withAuth("BUYER", a.checkout))
 	mux.HandleFunc("GET /api/orders", a.withAuth("", a.orders))
+
+	// Wishlist
+	mux.HandleFunc("GET /api/wishlist", a.withAuth("BUYER", a.getWishlist))
+	mux.HandleFunc("POST /api/wishlist", a.withAuth("BUYER", a.addWishlist))
+	mux.HandleFunc("DELETE /api/wishlist/{productId}", a.withAuth("BUYER", a.deleteWishlist))
 	
 	// Seller endpoints
 	mux.HandleFunc("GET /api/seller/me", a.withAuth("SELLER", a.sellerMe))
@@ -752,6 +757,60 @@ func (a *app) deleteCart(w http.ResponseWriter, r *http.Request) {
 	_, err := a.db.Exec(r.Context(), "DELETE FROM cart_items WHERE id=$1 AND user_id=$2", r.PathValue("id"), auth.UserID)
 	if err != nil {
 		errorJSON(w, 500, "could not remove cart item")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *app) getWishlist(w http.ResponseWriter, r *http.Request) {
+	auth := mustAuth(r)
+	rows, err := a.db.Query(r.Context(), `SELECT p.id,p.seller_id,s.store_name,p.title,p.slug,p.description,p.brand,coalesce(c.name,''),p.gender,p.image_url,p.mrp_cents,p.sale_price_cents,p.active,p.approved
+		FROM wishlist_items wi JOIN products p ON p.id=wi.product_id JOIN sellers s ON s.id=p.seller_id LEFT JOIN categories c ON c.id=p.category_id
+		WHERE wi.user_id=$1 ORDER BY wi.created_at DESC`, auth.UserID)
+	if err != nil {
+		errorJSON(w, 500, "could not load wishlist")
+		return
+	}
+	defer rows.Close()
+	items, err := scanProducts(r.Context(), a.db, rows)
+	if err != nil {
+		errorJSON(w, 500, "could not read wishlist products")
+		return
+	}
+	writeJSON(w, 200, items)
+}
+
+func (a *app) addWishlist(w http.ResponseWriter, r *http.Request) {
+	auth := mustAuth(r)
+	var req struct {
+		ProductID string `json:"productId"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if req.ProductID == "" {
+		errorJSON(w, 400, "productId is required")
+		return
+	}
+	_, err := a.db.Exec(r.Context(), `INSERT INTO wishlist_items(user_id,product_id) VALUES($1,$2)
+		ON CONFLICT(user_id,product_id) DO NOTHING`, auth.UserID, req.ProductID)
+	if err != nil {
+		errorJSON(w, 400, "could not add to wishlist")
+		return
+	}
+	writeJSON(w, 201, map[string]any{"ok": true})
+}
+
+func (a *app) deleteWishlist(w http.ResponseWriter, r *http.Request) {
+	auth := mustAuth(r)
+	prodID := r.PathValue("productId")
+	if prodID == "" {
+		errorJSON(w, 400, "productId is required")
+		return
+	}
+	_, err := a.db.Exec(r.Context(), "DELETE FROM wishlist_items WHERE user_id=$1 AND product_id=$2", auth.UserID, prodID)
+	if err != nil {
+		errorJSON(w, 500, "could not remove from wishlist")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
