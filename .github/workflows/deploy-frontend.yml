@@ -42,3 +42,10 @@ jobs:
         with:
           folder: client/dist
           branch: gh-pages
+
+      - name: Submit to IndexNow
+        run: npm run indexnow
+        working-directory: client
+        env:
+          NODE_ENV: production
+
