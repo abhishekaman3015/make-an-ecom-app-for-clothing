@@ -1,12 +1,15 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -116,7 +119,86 @@ type orderItem struct {
 	SellerAmountCents int    `json:"sellerAmountCents"`
 }
 
+func loadEnv() {
+	file, err := os.Open(".env")
+	if err != nil {
+		return
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) == 2 {
+			key := strings.TrimSpace(parts[0])
+			val := strings.TrimSpace(parts[1])
+			if (strings.HasPrefix(val, "\"") && strings.HasSuffix(val, "\"")) ||
+				(strings.HasPrefix(val, "'") && strings.HasSuffix(val, "'")) {
+				val = val[1 : len(val)-1]
+			}
+			os.Setenv(key, val)
+		}
+	}
+}
+
+func verifyRazorpaySignature(orderID, paymentID, signature, secret string) bool {
+	message := orderID + "|" + paymentID
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(message))
+	expectedSignature := hex.EncodeToString(mac.Sum(nil))
+	return hmac.Equal([]byte(expectedSignature), []byte(signature))
+}
+
+func (a *app) createRazorpayOrder(amount int, receipt string) (string, error) {
+	keyID := env("RAZORPAY_KEY_ID", "")
+	keySecret := env("RAZORPAY_KEY_SECRET", "")
+	if keyID == "" || keySecret == "" {
+		return "", errors.New("Razorpay credentials are not configured")
+	}
+
+	payload := map[string]any{
+		"amount":   amount, // in paise
+		"currency": "INR",
+		"receipt":  receipt,
+	}
+	jsonBytes, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+
+	req, err := http.NewRequest("POST", "https://api.razorpay.com/v1/orders", bytes.NewBuffer(jsonBytes))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.SetBasicAuth(keyID, keySecret)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("Razorpay API error (status %d): %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var res struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		return "", err
+	}
+	return res.ID, nil
+}
+
 func main() {
+	loadEnv()
 	ctx := context.Background()
 	databaseURL := env("DATABASE_URL", "postgres://maithilcart:maithilcart@localhost:5432/maithilcart?sslmode=disable")
 	db, err := pgxpool.New(ctx, databaseURL)
@@ -223,6 +305,8 @@ func main() {
 	mux.HandleFunc("PATCH /api/cart/{id}", a.withAuth("BUYER", a.updateCart))
 	mux.HandleFunc("DELETE /api/cart/{id}", a.withAuth("BUYER", a.deleteCart))
 	mux.HandleFunc("POST /api/checkout", a.withAuth("BUYER", a.checkout))
+	mux.HandleFunc("POST /api/create-order", a.withAuth("BUYER", a.createOrder))
+	mux.HandleFunc("POST /api/verify-payment", a.withAuth("BUYER", a.verifyPayment))
 	mux.HandleFunc("GET /api/orders", a.withAuth("", a.orders))
 
 	// Wishlist
@@ -924,6 +1008,252 @@ func (a *app) checkout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 201, map[string]any{"id": orderID, "paymentReference": ref, "totalCents": total, "status": "PAID"})
+}
+
+func (a *app) createOrder(w http.ResponseWriter, r *http.Request) {
+	auth := mustAuth(r)
+	var req struct {
+		ShippingName    string `json:"shippingName"`
+		ShippingPhone   string `json:"shippingPhone"`
+		ShippingAddress string `json:"shippingAddress"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if req.ShippingName == "" || req.ShippingPhone == "" || req.ShippingAddress == "" {
+		errorJSON(w, 400, "shipping details are required")
+		return
+	}
+	phoneRegex := regexp.MustCompile(`^\d{10}$`)
+	if !phoneRegex.MatchString(req.ShippingPhone) {
+		errorJSON(w, http.StatusBadRequest, "shipping phone number must be exactly 10 digits")
+		return
+	}
+
+	tx, err := a.db.BeginTx(r.Context(), pgx.TxOptions{})
+	if err != nil {
+		errorJSON(w, 500, "could not start order transaction")
+		return
+	}
+	defer tx.Rollback(r.Context())
+
+	// Read cart items to calculate subtotal and total
+	rows, err := tx.Query(r.Context(), `SELECT ci.quantity,pv.id,pv.stock,p.id,p.seller_id,p.sale_price_cents,s.commission_bps
+		FROM cart_items ci JOIN product_variants pv ON pv.id=ci.variant_id JOIN products p ON p.id=pv.product_id JOIN sellers s ON s.id=p.seller_id
+		WHERE ci.user_id=$1 FOR UPDATE`, auth.UserID)
+	if err != nil {
+		errorJSON(w, 500, "could not load cart items")
+		return
+	}
+	type line struct {
+		qty, stock, price, commission  int
+		variantID, productID, sellerID string
+	}
+	var lines []line
+	subtotal := 0
+	for rows.Next() {
+		var l line
+		if err := rows.Scan(&l.qty, &l.variantID, &l.stock, &l.productID, &l.sellerID, &l.price, &l.commission); err != nil {
+			errorJSON(w, 500, "could not read cart")
+			return
+		}
+		if l.qty > l.stock {
+			errorJSON(w, 409, "not enough stock for one or more items")
+			return
+		}
+		subtotal += l.qty * l.price
+		lines = append(lines, l)
+	}
+	rows.Close()
+	if len(lines) == 0 {
+		errorJSON(w, 400, "cart is empty")
+		return
+	}
+
+	shipping := 0
+	if subtotal < 199900 {
+		shipping = 9900
+	}
+	total := subtotal + shipping
+
+	if total < 100 { // Minimum Razorpay amount is 100 paise
+		errorJSON(w, 400, "amount must be at least 100 paise")
+		return
+	}
+
+	encName, _ := a.encrypt(req.ShippingName)
+	encPhone, _ := a.encrypt(req.ShippingPhone)
+	encAddress, _ := a.encrypt(req.ShippingAddress)
+
+	// Create local order with 'PLACED' status (unpaid)
+	var orderID string
+	err = tx.QueryRow(r.Context(), `INSERT INTO orders(buyer_id,status,subtotal_cents,shipping_cents,total_cents,shipping_name,shipping_phone,shipping_address)
+		VALUES($1,'PLACED',$2,$3,$4,$5,$6,$7) RETURNING id`, auth.UserID, subtotal, shipping, total, encName, encPhone, encAddress).Scan(&orderID)
+	if err != nil {
+		errorJSON(w, 500, "could not create local order")
+		return
+	}
+
+	// Create order items
+	for _, l := range lines {
+		fee := l.qty * l.price * l.commission / 10000
+		sellerAmount := l.qty*l.price - fee
+		_, err = tx.Exec(r.Context(), `INSERT INTO order_items(order_id,seller_id,product_id,variant_id,quantity,unit_price_cents,seller_amount_cents,platform_fee_cents)
+			VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, orderID, l.sellerID, l.productID, l.variantID, l.qty, l.price, sellerAmount, fee)
+		if err != nil {
+			errorJSON(w, 500, "could not create order item")
+			return
+		}
+	}
+
+	// Call Razorpay API to create an order
+	rzpOrderID, err := a.createRazorpayOrder(total, orderID)
+	if err != nil {
+		errorJSON(w, 500, "failed to create payment order: "+err.Error())
+		return
+	}
+
+	// Store the Razorpay order ID in the payments table as PENDING
+	_, err = tx.Exec(r.Context(), "INSERT INTO payments(order_id,provider,provider_reference,status,amount_cents) VALUES($1,'razorpay',$2,'PENDING',$3)", orderID, rzpOrderID, total)
+	if err != nil {
+		errorJSON(w, 500, "could not save payment reference")
+		return
+	}
+
+	if err := tx.Commit(r.Context()); err != nil {
+		errorJSON(w, 500, "could not finalize order creation")
+		return
+	}
+
+	writeJSON(w, 201, map[string]any{
+		"order_id":       rzpOrderID,
+		"amount":         total,
+		"currency":       "INR",
+		"local_order_id": orderID,
+	})
+}
+
+func (a *app) verifyPayment(w http.ResponseWriter, r *http.Request) {
+	auth := mustAuth(r)
+	var req struct {
+		RazorpayPaymentID string `json:"razorpay_payment_id"`
+		RazorpayOrderID   string `json:"razorpay_order_id"`
+		RazorpaySignature string `json:"razorpay_signature"`
+		LocalOrderID      string `json:"local_order_id"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if req.RazorpayPaymentID == "" || req.RazorpayOrderID == "" || req.RazorpaySignature == "" || req.LocalOrderID == "" {
+		errorJSON(w, 400, "missing required fields for payment verification")
+		return
+	}
+
+	keySecret := env("RAZORPAY_KEY_SECRET", "")
+	if keySecret == "" {
+		errorJSON(w, 500, "Razorpay secret is not configured")
+		return
+	}
+
+	// Verify the signature
+	if !verifyRazorpaySignature(req.RazorpayOrderID, req.RazorpayPaymentID, req.RazorpaySignature, keySecret) {
+		errorJSON(w, 400, "payment signature verification failed")
+		return
+	}
+
+	tx, err := a.db.BeginTx(r.Context(), pgx.TxOptions{})
+	if err != nil {
+		errorJSON(w, 500, "could not verify payment transaction")
+		return
+	}
+	defer tx.Rollback(r.Context())
+
+	// Retrieve local order and check status
+	var status string
+	var totalCents int
+	err = tx.QueryRow(r.Context(), "SELECT status, total_cents FROM orders WHERE id=$1 AND buyer_id=$2 FOR UPDATE", req.LocalOrderID, auth.UserID).Scan(&status, &totalCents)
+	if err != nil {
+		errorJSON(w, 404, "order not found")
+		return
+	}
+
+	if status == "PAID" {
+		// Already processed
+		writeJSON(w, 200, map[string]any{"ok": true})
+		return
+	}
+
+	// Update order status to PAID
+	_, err = tx.Exec(r.Context(), "UPDATE orders SET status='PAID', updated_at=now() WHERE id=$1", req.LocalOrderID)
+	if err != nil {
+		errorJSON(w, 500, "failed to update order status")
+		return
+	}
+
+	// Fetch the order items to update inventory and payouts
+	rows, err := tx.Query(r.Context(), `SELECT variant_id, quantity, seller_id, unit_price_cents, platform_fee_cents, seller_amount_cents FROM order_items WHERE order_id=$1`, req.LocalOrderID)
+	if err != nil {
+		errorJSON(w, 500, "failed to load order items")
+		return
+	}
+	type item struct {
+		variantID                    string
+		qty, sellerAmount, fee, price int
+		sellerID                     string
+	}
+	var items []item
+	for rows.Next() {
+		var it item
+		if err := rows.Scan(&it.variantID, &it.qty, &it.sellerID, &it.price, &it.fee, &it.sellerAmount); err != nil {
+			rows.Close()
+			errorJSON(w, 500, "failed to read order items")
+			return
+		}
+		items = append(items, it)
+	}
+	rows.Close()
+
+	// Update stock and insert payouts
+	for _, it := range items {
+		// Decrement variant stock
+		_, err = tx.Exec(r.Context(), "UPDATE product_variants SET stock=stock-$1 WHERE id=$2", it.qty, it.variantID)
+		if err != nil {
+			errorJSON(w, 500, "failed to update stock")
+			return
+		}
+
+		// Insert seller payouts
+		_, err = tx.Exec(r.Context(), "INSERT INTO seller_payouts(seller_id,order_id,amount_cents) VALUES($1,$2,$3)", it.sellerID, req.LocalOrderID, it.sellerAmount)
+		if err != nil {
+			errorJSON(w, 500, "failed to create seller payout")
+			return
+		}
+	}
+
+	// Update payment record in database to SUCCEEDED and link the Razorpay payment id
+	_, err = tx.Exec(r.Context(), "UPDATE payments SET status='SUCCEEDED', provider_reference=$1 WHERE order_id=$2", req.RazorpayPaymentID, req.LocalOrderID)
+	if err != nil {
+		// Fallback: insert if not present
+		_, err = tx.Exec(r.Context(), "INSERT INTO payments(order_id,provider,provider_reference,status,amount_cents) VALUES($1,'razorpay',$2,'SUCCEEDED',$3) ON CONFLICT(order_id) DO UPDATE SET status='SUCCEEDED', provider_reference=excluded.provider_reference", req.LocalOrderID, req.RazorpayPaymentID, totalCents)
+		if err != nil {
+			errorJSON(w, 500, "failed to save payment record")
+			return
+		}
+	}
+
+	// Clear buyer's cart items
+	_, err = tx.Exec(r.Context(), "DELETE FROM cart_items WHERE user_id=$1", auth.UserID)
+	if err != nil {
+		errorJSON(w, 500, "failed to clear cart items")
+		return
+	}
+
+	if err := tx.Commit(r.Context()); err != nil {
+		errorJSON(w, 500, "failed to commit transaction")
+		return
+	}
+
+	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
 func (a *app) orders(w http.ResponseWriter, r *http.Request) {

@@ -73,6 +73,10 @@ export const api = {
     request<{ ok: boolean }>("/api/wishlist", { method: "POST", body: JSON.stringify({ productId }) }, token),
   removeWishlist: (token: string, productId: string) =>
     request<void>(`/api/wishlist/${productId}`, { method: "DELETE" }, token),
+  createRazorpayOrder: (token: string, payload: { shippingName: string; shippingPhone: string; shippingAddress: string }) =>
+    request<{ order_id: string; local_order_id: string; amount: number; currency: string }>("/api/create-order", { method: "POST", body: JSON.stringify(payload) }, token),
+  verifyRazorpayPayment: (token: string, payload: { razorpay_payment_id: string; razorpay_order_id: string; razorpay_signature: string; local_order_id: string }) =>
+    request<{ ok: boolean }>("/api/verify-payment", { method: "POST", body: JSON.stringify(payload) }, token),
   checkout: (token: string, payload: { shippingName: string; shippingPhone: string; shippingAddress: string; paymentMethod: string }) =>
     request<{ id: string; paymentReference: string; totalCents: number; status: string }>("/api/checkout", { method: "POST", body: JSON.stringify(payload) }, token),
   orders: (token: string) => requestArray<Order>("/api/orders", {}, token),

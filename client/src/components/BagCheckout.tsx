@@ -36,11 +36,7 @@ export function BagCheckout({
   const [shippingPin, setShippingPin] = useState("560103");
 
   // Payment details state
-  const [paymentMethod, setPaymentMethod] = useState("card");
-  const [cardNumber, setCardNumber] = useState("4321 5678 9012 3456");
-  const [cardName, setCardName] = useState("Aarav Sharma");
-  const [cardExpiry, setCardExpiry] = useState("12/29");
-  const [cardCvv, setCardCvv] = useState("123");
+  const [paymentMethod, setPaymentMethod] = useState("online");
 
   const [loading, setLoading] = useState(false);
 
@@ -82,7 +78,7 @@ export function BagCheckout({
         shippingName,
         shippingPhone,
         shippingAddress: fullAddress,
-        paymentMethod: paymentMethod === "card" ? "mock-card" : "cod",
+        paymentMethod: paymentMethod === "online" ? "online" : "cod",
       });
     } catch (err) {
       console.error("Checkout failed", err);
@@ -297,11 +293,11 @@ export function BagCheckout({
               <div className="payment-method-selector">
                 <button
                   type="button"
-                  className={`payment-option-btn ${paymentMethod === "card" ? "selected" : ""}`}
-                  onClick={() => setPaymentMethod("card")}
+                  className={`payment-option-btn ${paymentMethod === "online" ? "selected" : ""}`}
+                  onClick={() => setPaymentMethod("online")}
                 >
                   <CreditCard size={20} />
-                  <span>Credit / Debit Card</span>
+                  <span>Online Payment (UPI, Cards, Netbanking)</span>
                 </button>
                 <button
                   type="button"
@@ -313,63 +309,14 @@ export function BagCheckout({
                 </button>
               </div>
 
-              {paymentMethod === "card" && (
-                <div style={{ display: "flex", flexDirection: "column", gap: "16px", marginTop: "10px" }}>
-                  {/* Card Form */}
-                  <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                    <label style={{ fontSize: "11px", fontWeight: 700, color: "var(--text-muted)" }}>CARD NUMBER</label>
-                    <input
-                      type="text"
-                      value={cardNumber}
-                      onChange={(e) => setCardNumber(e.target.value)}
-                      required
-                      placeholder="XXXX XXXX XXXX XXXX"
-                      className="auth-input"
-                    />
-                  </div>
-
-                  <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                    <label style={{ fontSize: "11px", fontWeight: 700, color: "var(--text-muted)" }}>CARDHOLDER NAME</label>
-                    <input
-                      type="text"
-                      value={cardName}
-                      onChange={(e) => setCardName(e.target.value)}
-                      required
-                      placeholder="NAME ON CARD"
-                      className="auth-input"
-                    />
-                  </div>
-
-                  <div className="grid-2col">
-                    <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                      <label style={{ fontSize: "11px", fontWeight: 700, color: "var(--text-muted)" }}>EXPIRY (MM/YY)</label>
-                      <input
-                        type="text"
-                        value={cardExpiry}
-                        onChange={(e) => setCardExpiry(e.target.value)}
-                        required
-                        placeholder="MM/YY"
-                        className="auth-input"
-                      />
-                    </div>
-                    <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                      <label style={{ fontSize: "11px", fontWeight: 700, color: "var(--text-muted)" }}>CVV</label>
-                      <input
-                        type="password"
-                        value={cardCvv}
-                        onChange={(e) => setCardCvv(e.target.value)}
-                        required
-                        placeholder="XXX"
-                        className="auth-input"
-                        maxLength={3}
-                      />
-                    </div>
-                  </div>
+              {paymentMethod === "online" && (
+                <div className="warning" style={{ background: "#eef6ff", borderColor: "#2b8cf0", color: "#1a6cb3", fontSize: "13px", marginTop: "10px" }}>
+                  <strong>Pay securely with Razorpay!</strong> Supports Cards, UPI, Netbanking, and Wallets. Click the button below to complete your payment.
                 </div>
               )}
 
               {paymentMethod === "cod" && (
-                <div className="warning" style={{ background: "#e8f9f5", borderColor: "#03a685", color: "#03a685", fontSize: "13px" }}>
+                <div className="warning" style={{ background: "#e8f9f5", borderColor: "#03a685", color: "#03a685", fontSize: "13px", marginTop: "10px" }}>
                   <strong>Pay on Delivery Enabled!</strong> You can pay in cash or via UPI at the time of delivery. A standard verification check will occur.
                 </div>
               )}

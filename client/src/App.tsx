@@ -300,12 +300,77 @@ export function App() {
   const handlePlaceOrder = async (payload: { shippingName: string; shippingPhone: string; shippingAddress: string; paymentMethod: string }) => {
     if (!session) return;
     try {
-      const result = await api.checkout(session.token, payload);
-      setNotice(`Order placed successfully! Reference: ${result.paymentReference}`);
-      setView("orders");
-      await refresh();
+      if (payload.paymentMethod === "online") {
+        // Create the order in Razorpay & locally via Go backend
+        const orderData = await api.createRazorpayOrder(session.token, {
+          shippingName: payload.shippingName,
+          shippingPhone: payload.shippingPhone,
+          shippingAddress: payload.shippingAddress
+        });
+
+        // Open Razorpay Standard Checkout modal
+        await new Promise<void>((resolve, reject) => {
+          const options = {
+            key: import.meta.env.VITE_RAZORPAY_KEY_ID || "rzp_test_SzLTiQitHnqIfY",
+            amount: orderData.amount,
+            currency: orderData.currency,
+            name: "Maithil Cart",
+            description: "Payment for Clothing Order",
+            image: "/assets/maithilcart-logo.jpg",
+            order_id: orderData.order_id,
+            handler: async function (response: any) {
+              try {
+                // Verify signature on backend
+                const verifyResult = await api.verifyRazorpayPayment(session.token, {
+                  razorpay_payment_id: response.razorpay_payment_id,
+                  razorpay_order_id: response.razorpay_order_id,
+                  razorpay_signature: response.razorpay_signature,
+                  local_order_id: orderData.local_order_id
+                });
+
+                if (verifyResult.ok) {
+                  setNotice("Payment successful! Order completed.");
+                  setView("orders");
+                  await refresh();
+                  resolve();
+                } else {
+                  setNotice("Payment verification failed.");
+                  reject(new Error("Payment verification failed."));
+                }
+              } catch (err: any) {
+                setNotice(err.message || "Payment verification failed.");
+                reject(err);
+              }
+            },
+            prefill: {
+              name: payload.shippingName,
+              contact: payload.shippingPhone,
+              email: session.user.email
+            },
+            theme: {
+              color: "#03a685"
+            },
+            modal: {
+              ondismiss: function () {
+                setNotice("Payment cancelled by user.");
+                reject(new Error("Payment cancelled by user."));
+              }
+            }
+          };
+
+          const rzp = new (window as any).Razorpay(options);
+          rzp.open();
+        });
+      } else {
+        // Fallback for Cash on Delivery (COD) / mock checkout
+        const result = await api.checkout(session.token, payload);
+        setNotice(`Order placed successfully! Reference: ${result.paymentReference}`);
+        setView("orders");
+        await refresh();
+      }
     } catch (err: any) {
       setNotice(err.message || "Checkout failed.");
+      throw err;
     }
   };
 
